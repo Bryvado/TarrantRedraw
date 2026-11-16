@@ -1,7 +1,11 @@
 # SCRIPT: tarrant_redraw_export.R
 # Writes the TarrantRedraw app's data files into a local clone of github.com/Bryvado/TarrantRedraw,
-# copies in the pipeline scripts and build brief, then commits and pushes.
-# Run in the SAME R session, right after tarrant_cc_redist_map7.R has run top to bottom.
+# copies in the two pipeline scripts, then commits and pushes.
+# Self-starting: it runs the data-building part of tarrant_cc_redist_map7.R first (checkpoints only,
+# no charts or maps), so it works from a fresh R session.
+#
+# Before sourcing, in the CONSOLE only (never in this file, which is pushed to a public repo):
+#   Sys.setenv(GITHUB_PAT = "github_pat_...")
 
 library(tidyverse)
 library(sf)
@@ -11,13 +15,27 @@ library(jsonlite)
 library(rmapshaper)
 library(gert)
 
-REPO_URL <- "https://github.com/Bryvado/TarrantRedraw.git"
-REPO     <- file.path(Sys.getenv("USERPROFILE"), "TarrantRedraw")
-OUT      <- file.path(REPO, "data")
+MAIN      <- "//apporto.com/dfs/GWU/Users/brysonkloesel_gwu/Documents/TarrantRedistricting/tarrant_cc_redist_map7.R"
+REPO_URL  <- "https://github.com/Bryvado/TarrantRedraw.git"
+REPO      <- file.path(Sys.getenv("USERPROFILE"), "TarrantRedraw")   # local disk: libgit2 can't open repos on the network share
+OUT       <- file.path(REPO, "data")
+GIT_NAME  <- "Bryvado"
+GIT_EMAIL <- "166976989+Bryvado@users.noreply.github.com"              # your no-reply address from GitHub Settings > Emails
 
+# ---- 0. Build the pipeline objects (main script, top through the R-pack plan) ----
+NEED_OBJ <- c("tar_sf", "cc_pack", "map7_sf", "cities", "comms", "DIR")
+if (!all(sapply(NEED_OBJ, exists))) {
+  stopifnot(file.exists(MAIN))
+  src  <- readLines(MAIN)
+  stop_at <- grep("^stopifnot\\(length\\(cc_pack\\)", src)
+  stopifnot(length(stop_at) == 1)
+  eval(parse(text = src[1:stop_at]), envir = globalenv())
+}
+stopifnot(all(sapply(NEED_OBJ, exists)))
+
+# ---- 0b. Local clone ----
 if (!dir.exists(file.path(REPO, ".git"))) git_clone(REPO_URL, REPO)
-stopifnot(dir.exists(file.path(REPO, ".git")),
-          all(sapply(c("tar_sf", "cc_pack", "map7_sf", "cities", "comms", "DIR"), exists)))
+stopifnot(dir.exists(file.path(REPO, ".git")))
 dir.create(file.path(OUT, "blocks"), recursive = TRUE, showWarnings = FALSE)
 
 wr <- function(x, f) {
@@ -105,15 +123,19 @@ is_blk <- str_detect(fs, "[/\\\\]blocks[/\\\\]")
 tibble(file = basename(fs[!is_blk]), mb = round(file.size(fs[!is_blk]) / 1e6, 2)) |> print()
 cat("Block files:", sum(is_blk), "| total MB:", round(sum(file.size(fs[is_blk])) / 1e6, 1), "\n")
 
-# ---- 7. Copy the scripts and brief in, then commit and push ----
-extras <- c(file.path(DIR, "tarrant_cc_redist_map7.R"),
-            file.path(DIR, "tarrant_redraw_export.R"))
+# ---- 7. Copy the two scripts in, then commit and push ----
+extras <- c(MAIN, file.path(dirname(MAIN), "tarrant_redraw_export.R"))
 for (f in extras[file.exists(extras)]) file.copy(f, REPO, overwrite = TRUE)
 if (any(!file.exists(extras))) cat("Not found, copy by hand:", basename(extras[!file.exists(extras)]), "\n")
 
+# identity is stored in the repo itself: the global git config sits on the network share, where gert can't read it
+stopifnot(!grepl("YOUR_ID", GIT_EMAIL))
+git_config_set("user.name",  GIT_NAME,  repo = REPO)
+git_config_set("user.email", GIT_EMAIL, repo = REPO)
+
 git_add(".", repo = REPO)
-if (nrow(git_status(repo = REPO))) {
-  git_commit("Add app data, pipeline scripts and build brief", repo = REPO)
-  git_push(remote = "origin", set_upstream = TRUE, password = Sys.getenv("GITHUB_PAT"), repo = REPO)
-}
+if (nrow(git_status(repo = REPO))) git_commit("Add app data and pipeline scripts", repo = REPO)
+
+stopifnot(nzchar(Sys.getenv("GITHUB_PAT")))
+git_push(remote = "origin", set_upstream = TRUE, password = Sys.getenv("GITHUB_PAT"), repo = REPO)
 git_log(repo = REPO, max = 3)
