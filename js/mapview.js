@@ -297,13 +297,27 @@ export class MapView {
     this.spaceDown = false;
 
     let painting = false, boxing = false, boxStart = null, lastPt = null;
+    // Whether the drag in progress erases: fixed at mousedown, so a right-drag
+    // keeps erasing for its whole length.
+    let dragErase = false;
     const rubber = document.getElementById('box-rubber');
+    const ring = document.getElementById('brush-ring');
+    this.brushRadius = this.brushRadius || 2;
 
-    const wantsPan = (e) => this.brushMode === 'pan' || this.spaceDown
-      || e.ctrlKey || e.metaKey || e.button === 2 || e.button === 1;
+    const wantsPan = () => this.brushMode === 'pan' || this.spaceDown;
+
+    const moveRing = (pt) => {
+      const show = pt && this.brushMode === 'click' && !this.spaceDown && this.brushRadius > 2;
+      ring.hidden = !show;
+      if (!show) return;
+      const r = this.brushRadius;
+      ring.style.left = `${pt.x - r}px`; ring.style.top = `${pt.y - r}px`;
+      ring.style.width = `${2 * r}px`; ring.style.height = `${2 * r}px`;
+    };
+    this._moveRing = moveRing;
 
     const pickAt = (pt) => {
-      const r = 2;
+      const r = this.brushRadius;
       const feats = m.queryRenderedFeatures(
         [[pt.x - r, pt.y - r], [pt.x + r, pt.y + r]],
         { layers: this.blockFeatures.size ? ['blocks-fill', 'vtd-fill'] : ['vtd-fill'] },
@@ -328,9 +342,17 @@ export class MapView {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     m.on('mousedown', (e) => {
-      if (wantsPan(e.originalEvent)) return;              // let the map pan
+      if (wantsPan()) return;                             // let the map pan
       const oe = e.originalEvent;
-      if (oe.button !== 0) return;
+      // Left button paints; right button (or Alt) erases.
+      if (oe.button !== 0 && oe.button !== 2) return;
+      dragErase = oe.button === 2 || oe.altKey;
+      if (this.brushMode === 'fill' && !oe.shiftKey) {
+        const top = m.queryRenderedFeatures(e.point, { layers: ['vtd-fill'] })[0];
+        if (top) this.onPick({ fill: this.data.idxOf.get(top.properties.vtdkey), erase: dragErase });
+        oe.preventDefault();
+        return;
+      }
       if (this.brushMode === 'box' || oe.shiftKey) {
         boxing = true; boxStart = e.point;
         m.dragPan.disable();
@@ -342,11 +364,12 @@ export class MapView {
       }
       painting = true; lastPt = e.point;
       m.dragPan.disable();
-      emitPick(pickAt(e.point), oe.altKey);
+      emitPick(pickAt(e.point), dragErase);
       oe.preventDefault();
     });
 
     m.on('mousemove', (e) => {
+      moveRing(e.point);
       if (boxing) {
         const x0 = Math.min(boxStart.x, e.point.x), y0 = Math.min(boxStart.y, e.point.y);
         rubber.style.left = `${x0}px`; rubber.style.top = `${y0}px`;
@@ -370,7 +393,7 @@ export class MapView {
           }
         }
         lastPt = e.point;
-        emitPick(acc, e.originalEvent.altKey);
+        emitPick(acc, dragErase);
         return;
       }
       this.hover(e.point);
@@ -385,7 +408,7 @@ export class MapView {
           const feats = m.queryRenderedFeatures([[Math.min(a.x, b.x), Math.min(a.y, b.y)],
             [Math.max(a.x, b.x), Math.max(a.y, b.y)]],
           { layers: this.blockFeatures.size ? ['blocks-fill', 'vtd-fill'] : ['vtd-fill'] });
-          emitPick(feats, e && e.originalEvent ? e.originalEvent.altKey : false);
+          emitPick(feats, dragErase);
         }
         this.onPick({ commit: true });
         return;
@@ -397,11 +420,11 @@ export class MapView {
       }
     };
     m.on('mouseup', finish);
-    canvas.addEventListener('mouseleave', () => finish(null));
+    canvas.addEventListener('mouseleave', () => { finish(null); moveRing(null); });
     window.addEventListener('blur', () => finish(null));
 
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space' && !e.repeat && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+      if (e.code === 'Space' && !e.repeat && !/^(TEXTAREA|SELECT)$/.test(document.activeElement.tagName) && !(document.activeElement.tagName === 'INPUT' && /^(text|number)$/.test(document.activeElement.type))) {
         this.spaceDown = true; canvas.style.cursor = 'grab'; e.preventDefault();
       }
     });
@@ -431,6 +454,13 @@ export class MapView {
   setBrushMode(mode) {
     this.brushMode = mode;
     const c = this.map.getCanvasContainer();
-    c.style.cursor = mode === 'pan' ? '' : 'crosshair';
+    c.style.cursor = mode === 'pan' ? '' : mode === 'fill' ? 'cell' : 'crosshair';
+    if (this._moveRing) this._moveRing(null);
+  }
+
+  /** Brush half-width in screen pixels. 2 is a single-unit point brush. */
+  setBrushRadius(px) {
+    this.brushRadius = px;
+    if (this._moveRing) this._moveRing(null);
   }
 }

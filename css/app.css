@@ -186,6 +186,19 @@ table.at tr.unas td{color:var(--fg3)}
   display:flex;align-items:center;justify-content:center;padding:28px}
 #modal-back[hidden]{display:none}
 #box-rubber[hidden]{display:none}
+#brush-ring{
+  position:absolute;z-index:5;pointer-events:none;border-radius:3px;
+  border:1.5px solid #f5f5f5;box-shadow:0 0 0 1px rgba(28,30,34,.7);
+}
+#brush-ring[hidden]{display:none}
+.sizerow{display:flex;align-items:center;gap:7px;font-size:12px;margin:8px 0 4px}
+.sizerow input{flex:1;min-width:0;accent-color:var(--accent)}
+.radio-row kbd,.chk kbd{margin-left:auto}
+.linkbtn{background:none;border:none;padding:4px 0 0;color:var(--fg2);font-size:11px}
+.linkbtn:hover:not(:disabled){background:none;color:var(--fg)}
+table.keys{width:100%;border-collapse:collapse}
+table.keys td{padding:4px 0;border-bottom:1px solid var(--line);color:var(--fg2)}
+table.keys td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg)}
 #modal{
   background:var(--bg2);border:1px solid var(--line);border-radius:7px;
   max-width:620px;width:100%;max-height:100%;overflow-y:auto;

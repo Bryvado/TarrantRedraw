@@ -98,10 +98,29 @@ Two properties of the data the app leans on:
 
 ## Using it
 
-**Drawing.** Pick a precinct in the left rail (or press `1`–`4`; `0` erases). Left-drag
-paints. `Shift`+drag is a box select, `Alt`+click erases, and `Space` or a right-drag pans.
-The lock next to each precinct stops it being painted over. Undo and redo are `Ctrl+Z` /
-`Ctrl+Shift+Z`.
+**Drawing.** Pick a precinct in the left rail (or press `1`–`4`). Left-drag paints and
+**right-drag erases**, with the brush, the box and the fill alike. `Space`+drag pans and
+the wheel zooms. The lock next to each precinct stops it being painted over.
+
+| Key | Does |
+|---|---|
+| `1` `2` `3` `4` | Pick a precinct |
+| `0` or `E` | Pick the eraser |
+| `I` | Pick the precinct under the cursor |
+| `B` / `M` / `F` / `H` | Brush / box select / fill region / pan |
+| `Shift`+drag | Box select, whatever tool is active |
+| `[` and `]` | Smaller / larger brush |
+| `U` | Paint unassigned only, on or off |
+| `L` | Lock or unlock the active precinct |
+| `Z` or `Ctrl+Z` | Undo |
+| `R`, `Ctrl+Shift+Z` or `Ctrl+Y` | Redo |
+| `?` | Show this list in the app |
+
+**Fill region** gives the clicked VTD, and every VTD connected to it with the same
+assignment, to the active precinct: one click assigns a leftover pocket, or hands a whole
+contiguous piece of one precinct to another. **Paint unassigned only** protects everything
+already drawn, so a new precinct can be brushed up against its neighbours without eating
+them. `Ctrl+R` is deliberately left alone and still reloads the page.
 
 A first visit starts blank: every VTD unassigned, plan named "Untitled plan". **Start from…**
 loads Map 7 or any other reference plan. **Clear** unassigns every VTD and drops all block

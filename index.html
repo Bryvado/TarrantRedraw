@@ -24,8 +24,8 @@
   </label>
 
   <div class="tb-group">
-    <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-    <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    <button id="btn-undo" title="Undo (Z or Ctrl+Z)">Undo</button>
+    <button id="btn-redo" title="Redo (R or Ctrl+Shift+Z)">Redo</button>
     <button id="btn-clear" title="Unassign every VTD and drop all block splits. Undo restores it.">Clear</button>
   </div>
 
@@ -59,13 +59,18 @@
     <section class="tool-sec">
       <h2>Brush</h2>
       <div class="radio-row" id="brush-mode">
-        <label><input type="radio" name="brushmode" value="click" checked> Click / drag</label>
-        <label><input type="radio" name="brushmode" value="box"> Box select</label>
-        <label><input type="radio" name="brushmode" value="pan"> Pan / navigate</label>
+        <label><input type="radio" name="brushmode" value="click" checked> Brush <kbd>B</kbd></label>
+        <label><input type="radio" name="brushmode" value="box"> Box select <kbd>M</kbd></label>
+        <label><input type="radio" name="brushmode" value="fill"> Fill region <kbd>F</kbd></label>
+        <label><input type="radio" name="brushmode" value="pan"> Pan <kbd>H</kbd></label>
       </div>
-      <p class="hint">Drag to paint. <kbd>Shift</kbd>+drag boxes, <kbd>Alt</kbd>+click erases,
-        <kbd>Space</kbd> or right-drag pans. Keys <kbd>1</kbd>–<kbd>4</kbd> pick a precinct,
-        <kbd>0</kbd> erases.</p>
+      <label class="sizerow">Size <kbd>[</kbd> <kbd>]</kbd>
+        <input type="range" id="brush-size" min="1" max="5" step="1" value="1">
+      </label>
+      <label class="chk"><input type="checkbox" id="opt-only-unassigned"> Paint unassigned only <kbd>U</kbd></label>
+      <p class="hint">Left-drag paints, <strong>right-drag erases</strong>. <kbd>Space</kbd>+drag pans.
+        <kbd>Z</kbd> undo, <kbd>R</kbd> redo, <kbd>I</kbd> picks the precinct under the cursor.</p>
+      <button id="btn-keys" class="linkbtn">All shortcuts <kbd>?</kbd></button>
     </section>
 
     <section class="tool-sec">
@@ -107,6 +112,7 @@
   <div id="map-wrap">
     <div id="map"></div>
     <div id="box-rubber" hidden></div>
+    <div id="brush-ring" hidden></div>
     <div id="map-note" class="map-note"></div>
   </div>
 
