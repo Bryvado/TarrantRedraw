@@ -495,6 +495,7 @@ function wireToolbar() {
   };
   setDock(prefs.get('dockOpen', true));
   $('#dock-toggle').onclick = (e) => { setDock($('#dock').classList.contains('closed')); e.currentTarget.blur(); };
+  wireResizers();
   $('#cmp-map7').onchange = (e) => {
     panel.compare = e.target.checked;
     prefs.set('compare', panel.compare);
@@ -537,6 +538,62 @@ function wireToolbar() {
       else if (k === '?' || k === '/') showKeysDialog();
     }
   });
+}
+
+/**
+ * Drag handles: the tool rail's width and the analytics dock's height. Both
+ * are remembered; a double-click puts the default back.
+ */
+function wireResizers() {
+  const root = document.documentElement, dock = $('#dock');
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const setTools = (w) => {
+    if (w == null) root.style.removeProperty('--tools-w');
+    else root.style.setProperty('--tools-w', `${w}px`);
+    prefs.set('toolsW', w);
+  };
+  const setDockH = (h) => {
+    dock.classList.toggle('sized', h != null);
+    if (h == null) dock.style.removeProperty('--dock-h');
+    else dock.style.setProperty('--dock-h', `${h}px`);
+    prefs.set('dockH', h);
+  };
+  const drag = (handle, onMove, onReset) => {
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('drag');
+      document.body.classList.add('resizing');
+      const move = (ev) => onMove(ev);
+      const up = () => {
+        handle.classList.remove('drag');
+        document.body.classList.remove('resizing');
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+      e.preventDefault();
+    });
+    handle.addEventListener('dblclick', onReset);
+  };
+
+  drag($('#rz-tools'),
+    (e) => setTools(clamp(Math.round(e.clientX), 190, Math.min(460, innerWidth * 0.4))),
+    () => setTools(null));
+  drag($('#rz-dock'),
+    (e) => {
+      const head = dock.querySelector('.dock-head').offsetHeight;
+      const bottom = dock.getBoundingClientRect().bottom;
+      setDockH(clamp(Math.round(bottom - e.clientY - head - 2), 48, Math.round(innerHeight * 0.7)));
+    },
+    () => setDockH(null));
+
+  const w = prefs.get('toolsW', null), h = prefs.get('dockH', null);
+  if (Number.isFinite(w)) setTools(w);
+  if (Number.isFinite(h)) setDockH(h);
 }
 
 /** True while the user is typing in a field, so single-key shortcuts stay out of the way. */

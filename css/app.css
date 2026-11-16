@@ -59,8 +59,7 @@ button.primary:hover{background:#0f635b}
 /* ---------- shell ---------- */
 #shell{flex:1;display:flex;min-height:0}
 #tools{
-  flex:0 0 232px;overflow-y:auto;background:var(--bg2);
-  border-right:1px solid var(--line);
+  flex:0 0 var(--tools-w,232px);overflow-y:auto;background:var(--bg2);
 }
 #center{flex:1;min-width:0;display:flex;flex-direction:column}
 #map-wrap{flex:1;min-height:0;position:relative}
@@ -171,12 +170,15 @@ select:focus{outline:none;border-color:var(--accent)}
 #map-wrap .maplibregl-ctrl-attrib-inner{color:#333}
 
 /* ---------- analytics panel ---------- */
-#dock{flex:0 0 auto;background:var(--bg2);border-top:1px solid var(--line);min-width:0}
+#dock{flex:0 0 auto;background:var(--bg2);min-width:0}
 .dock-head{display:flex;align-items:center;gap:14px;padding:3px 12px;border-bottom:1px solid var(--line)}
 .dock-head .linkbtn{padding:2px 0;font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:600;color:var(--fg3)}
 #dock.closed .dock-head{border-bottom:none}
 #dock.closed #panel-body{display:none}
 #panel-body{display:flex;align-items:stretch;overflow:auto;max-height:min(232px,36vh)}
+/* Once the dock has been dragged, it keeps the height the user gave it. */
+#dock.sized #panel-body{height:var(--dock-h);max-height:none}
+#dock.sized .splitlist{max-height:calc(var(--dock-h)/2 - 44px)}
 .pblock{flex:0 0 auto;padding:7px 10px 8px;border-right:1px solid var(--line)}
 .pblock:last-child{border-right:none}
 .pblock-wide{flex:1 1 180px;min-width:180px;container-type:inline-size}
@@ -217,6 +219,7 @@ table.at tr.unas td{color:var(--fg3)}
 @container (min-width:380px){
   .splitcols{grid-template-columns:1fr 1fr}
   .splitcols .splitlist{max-height:176px}
+  #dock.sized .splitlist{max-height:calc(var(--dock-h) - 50px)}
 }
 .splitcols h3 b{font-weight:600}
 .splitlist{font-size:11px;color:var(--fg2);line-height:1.45;max-height:76px;overflow-y:auto}
@@ -286,3 +289,17 @@ table.keys td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg)}
 
 .m-body > div > p{margin:0 0 9px}
 .chkgrid .chk kbd{margin-left:2px}
+
+/* ---------- panel resizers ---------- */
+.resizer{flex:0 0 5px;background:var(--line);position:relative;z-index:7;touch-action:none;
+  background-clip:content-box;transition:background-color .12s}
+.resizer-x{cursor:col-resize;padding:0 2px}
+.resizer-y{cursor:row-resize;padding:2px 0}
+.resizer:hover,.resizer.drag{background-color:var(--fg3)}
+body.resizing{user-select:none}
+body.resizing #map{pointer-events:none}
+#center:has(#dock.closed) #rz-dock{pointer-events:none;cursor:default}
+
+/* Attribution stays folded behind its (i) button until asked for. */
+#map-wrap .maplibregl-ctrl-attrib.maplibregl-compact-show{max-width:min(460px,60vw)}
+#map-wrap .maplibregl-ctrl-attrib-inner{font-size:10px;line-height:1.35}
