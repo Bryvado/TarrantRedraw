@@ -10,6 +10,11 @@ const LS_PLANS = 'tarrant-redraw/plans';
 const LS_PREFS = 'tarrant-redraw/prefs';
 const MAX_UNDO = 300;
 
+// v1 autosaves could hold the "Map 7 (copy)" plan the app used to load by
+// itself on a first visit. From v2 a first visit starts blank.
+const AUTOSAVE_VERSION = 2;
+const OLD_DEFAULT_NAME = 'Map 7 (copy)';
+
 export class PlanState {
   constructor(data) {
     this.data = data;
@@ -225,7 +230,7 @@ export class PlanState {
       ov[this.data.keys[i]] = o;
     }
     return {
-      v: 1,
+      v: AUTOSAVE_VERSION,
       name: this.name,
       asn: Array.from(this.asn).join(''),       // 782 digits, 0..4
       locks: this.locks.slice(),
@@ -268,8 +273,27 @@ export class PlanState {
   restore() {
     try {
       const raw = localStorage.getItem(LS_CUR);
-      return raw ? this.fromJSON(JSON.parse(raw)) : false;
+      if (!raw) return false;
+      const obj = JSON.parse(raw);
+      if ((obj.v ?? 1) < AUTOSAVE_VERSION && this._isOldDefault(obj)) {
+        // The plan the old version auto-loaded, never renamed or edited:
+        // open blank once. Anything the user named or changed is kept.
+        localStorage.removeItem(LS_CUR);
+        return false;
+      }
+      const ok = this.fromJSON(obj);
+      if (ok) this.autosave();          // rewrite at the current version
+      return ok;
     } catch (e) { return false; }
+  }
+
+  /** True only for an untouched auto-loaded Map 7: same name, same assignment, no splits. */
+  _isOldDefault(obj) {
+    if (obj.name !== OLD_DEFAULT_NAME) return false;
+    if (obj.blockOv && Object.keys(obj.blockOv).length) return false;
+    const m7 = this.data.planCols.map7;
+    if (!m7 || typeof obj.asn !== 'string') return false;
+    return obj.asn === Array.from(m7).join('');
   }
 }
 

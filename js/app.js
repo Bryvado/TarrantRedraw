@@ -67,10 +67,8 @@ async function boot() {
   wireTools();
   renderLegend();
 
-  // Restore the autosaved plan, or start from Map 7.
-  if (!state.restore()) {
-    state.setAll(data.planCols.map7, { name: 'Map 7 (copy)' });
-  }
+  // Restore the autosaved plan; with none, the plan starts blank.
+  state.restore();
   await rehydrateSplits();
 
   state.on(onStateChange);
@@ -141,6 +139,8 @@ function recompute(force) {
   updateMapNote(lastMetrics);
 }
 
+const WHOLE_PLAN_EDITS = new Set(['clear', 'start', 'import']);
+
 function onStateChange(detail) {
   if (detail.kind === 'reset') {
     mapView.syncAllStates();
@@ -148,6 +148,12 @@ function onStateChange(detail) {
     mapView.refreshOutlines();
     $('#plan-name').value = state.name;
     buildPrecinctList();
+    recompute(false);
+  } else if (detail.kind === 'edit' && WHOLE_PLAN_EDITS.has(detail.tx.label)) {
+    // Clear, Start from… and Import replace the whole assignment in one step.
+    mapView.syncAllStates();
+    mapView.pushBlockSource();
+    mapView.refreshOutlines();
     recompute(false);
   } else if (detail.kind === 'undo' || detail.kind === 'redo') {
     const t = detail.touched;
@@ -331,6 +337,10 @@ function updateMapNote(mx) {
 function wireToolbar() {
   $('#btn-undo').onclick = () => state.undo();
   $('#btn-redo').onclick = () => state.redo();
+  $('#btn-clear').onclick = () => {
+    if (state.clearAll()) setStatus('Cleared every assignment. Undo restores it.');
+    else setStatus('Nothing to clear.');
+  };
   $('#plan-name').onchange = (e) => {
     state.name = e.target.value.trim() || 'Untitled plan';
     e.target.value = state.name;
