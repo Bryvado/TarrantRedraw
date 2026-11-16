@@ -30,21 +30,31 @@ export function setPartisanPalette(name) {
   return pal;
 }
 
-// Unassigned units are left clear so the basemap shows through. A transparent
-// colour, not zero opacity, keeps them clickable.
+// Unassigned units can be left clear so the basemap shows through. A
+// transparent colour, not zero opacity, keeps them clickable.
 const CLEAR = 'rgba(0,0,0,0)';
 
-const districtColorExpr = () => [
-  'match', ['to-string', ['feature-state', 'd']],
-  '1', PRECINCT[0], '2', PRECINCT[1], '3', PRECINCT[2], '4', PRECINCT[3],
-  CLEAR,
+/** The drawn precinct of a feature, as a string ('' when unassigned). */
+const dState = () => ['to-string', ['feature-state', 'd']];
+
+/**
+ * `match` over the drawn precinct: one output per precinct 1..4, plus the
+ * output for everything unassigned.
+ */
+const byDistrict = (outs, unassigned) => [
+  'match', dState(),
+  '1', outs[0], '2', outs[1], '3', outs[2], '4', outs[3],
+  unassigned,
 ];
 
-function fillColorExpr(mode) {
-  const m = SHADE_MODES[mode];
-  if (!m || m.kind === 'cat') return districtColorExpr();
-  return ['case', ['has', m.prop], interpolateExpr(['get', m.prop], m.ramp, m.lo, m.hi), NODATA];
-}
+/** Per-unit shading for a measure mode, read off the unit's own properties. */
+const measureExpr = (m) =>
+  ['case', ['has', m.prop], interpolateExpr(['get', m.prop], m.ramp, m.lo, m.hi), NODATA];
+
+/** Whether a mode's measure exists on the block features as well as on VTDs. */
+const onBlocks = (m) => m && m.prop && m.prop !== 'dshare_pre' && m.prop !== 'shift26';
+
+const districtColorExpr = (unassigned = CLEAR) => byDistrict(PRECINCT, unassigned);
 
 export class MapView {
   constructor(container, data, topo, state) {
@@ -53,6 +63,7 @@ export class MapView {
     this.state = state;
     this.shadeMode = 'district';
     this.dimUnder = false;
+    this.shadeUnassigned = true;
     this.ready = false;
     this.onPick = () => {};
     this.onHover = () => {};
@@ -104,7 +115,7 @@ export class MapView {
     m.addLayer({
       id: 'vtd-fill', type: 'fill', source: 'vtd',
       paint: {
-        'fill-color': fillColorExpr('district'),
+        'fill-color': districtColorExpr(),
         // A split VTD is hidden so its blocks show through.
         'fill-opacity': ['case', ['==', ['feature-state', 'split'], 1], 0, 0.72],
       },
@@ -219,24 +230,36 @@ export class MapView {
   setShadeMode(mode) {
     this.shadeMode = mode;
     if (!this.ready) return;
-    // With precinct totals on, every unit takes its drawn precinct's colour,
-    // looked up through feature-state so a paint needs no data re-send.
-    const agg = mode !== 'district' && this.aggColors
-      ? ['match', ['to-string', ['feature-state', 'd']],
-        '1', this.aggColors[1], '2', this.aggColors[2], '3', this.aggColors[3], '4', this.aggColors[4],
-        CLEAR]
-      : null;
-    this.map.setPaintProperty('vtd-fill', 'fill-color', agg || fillColorExpr(mode));
-    const base = mode === 'district' ? 0.72 : (this.dimUnder ? 0.45 : 0.8);
+    const m = SHADE_MODES[mode];
+    const cat = !m || m.kind === 'cat';
+    // Unassigned units keep their own shading on the current measure unless
+    // the user turns that off, and are always clear in the precinct view,
+    // where there is no per-unit measure to show.
+    const keep = this.shadeUnassigned && !cat;
+    const unVtd = keep ? measureExpr(m) : CLEAR;
+    const unBlock = keep && onBlocks(m) ? measureExpr(m) : CLEAR;
+    // With precinct totals on, every assigned unit takes its drawn precinct's
+    // colour, looked up through feature-state so a paint needs no data re-send.
+    const agg = !cat && this.aggColors ? this.aggColors.slice(1, 5) : null;
+
+    const vtdExpr = agg ? byDistrict(agg, unVtd)
+      : cat ? districtColorExpr(unVtd)
+        : (keep ? measureExpr(m) : byDistrict(Array(4).fill(measureExpr(m)), CLEAR));
+    this.map.setPaintProperty('vtd-fill', 'fill-color', vtdExpr);
+    const base = cat ? 0.72 : (this.dimUnder ? 0.45 : 0.8);
     this.map.setPaintProperty('vtd-fill', 'fill-opacity',
       ['case', ['==', ['feature-state', 'split'], 1], 0, base]);
+
     // Blocks follow the same mode where the property exists on blocks.
-    const bm = SHADE_MODES[mode];
-    const blockExpr = (mode === 'district' || !bm.prop || bm.prop === 'dshare_pre' || bm.prop === 'shift26')
-      ? districtColorExpr()
-      : ['case', ['has', bm.prop], interpolateExpr(['get', bm.prop], bm.ramp, bm.lo, bm.hi), NODATA];
-    this.map.setPaintProperty('blocks-fill', 'fill-color', agg || blockExpr);
+    const blockUnit = onBlocks(m) ? measureExpr(m) : null;
+    const blockExpr = agg ? byDistrict(agg, unBlock)
+      : !blockUnit ? districtColorExpr(unBlock)
+        : (keep ? blockUnit : byDistrict(Array(4).fill(blockUnit), CLEAR));
+    this.map.setPaintProperty('blocks-fill', 'fill-color', blockExpr);
   }
+
+  /** Keep per-unit measure shading under unassigned units, or leave them clear. */
+  setShadeUnassigned(on) { this.shadeUnassigned = on; this.setShadeMode(this.shadeMode); }
 
   /** Colours for precincts 1..4 (index 0 unused), or null for per-unit shading. */
   setAggColors(colors) { this.aggColors = colors; this.setShadeMode(this.shadeMode); }

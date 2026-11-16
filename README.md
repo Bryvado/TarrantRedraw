@@ -129,11 +129,14 @@ the plan exactly.
 
 **Shading** is one mode at a time: assigned precinct, Democratic share on the composite /
 2026 / the 2020–24 baseline, the 2026 shift, and Hispanic, Black and nonwhite share of VAP.
-Drawn precinct outlines stay on top in every mode. Unassigned units are left clear, so the basemap shows
-through until they are drawn.
+Drawn precinct outlines stay on top in every mode. In the assigned-precinct view, unassigned units are
+left clear so the basemap shows through until they are drawn.
 **Precinct totals** (`T`) fills each drawn precinct with its own running total
 on the current measure instead of shading unit by unit, so the colour moves as each VTD or
-block is added. It works for the composite, 2026 and the three VAP shares; the baseline and
+block is added. **Shade unassigned** keeps every unit that is not yet drawn shaded by its own
+value on the current measure — on its own and under precinct totals alike — so the data you are
+drawing against stays visible; turn it off to leave the undrawn ground clear. It is greyed out in
+the assigned-precinct view, which has no per-unit measure to keep. It works for the composite, 2026 and the three VAP shares; the baseline and
 the shift have no vote counts to total, so the option is greyed out there. Map 7, cities and communities are
 separate toggles.
 
