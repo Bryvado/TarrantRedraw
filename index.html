@@ -57,18 +57,21 @@
     </section>
 
     <section class="tool-sec">
-      <h2>Brush</h2>
-      <div class="radio-row" id="brush-mode">
-        <label><input type="radio" name="brushmode" value="click" checked> Brush <kbd>B</kbd></label>
-        <label><input type="radio" name="brushmode" value="box"> Box select <kbd>M</kbd></label>
-        <label><input type="radio" name="brushmode" value="fill"> Fill region <kbd>F</kbd></label>
-        <label><input type="radio" name="brushmode" value="pan"> Pan <kbd>H</kbd></label>
+      <h2>Tool</h2>
+      <div class="seg" id="brush-mode">
+        <label title="Paint units with the active precinct"><input type="radio" name="brushmode" value="click" checked><span>Brush <kbd>B</kbd></span></label>
+        <label title="Drag a box to paint everything inside it"><input type="radio" name="brushmode" value="box"><span>Box <kbd>M</kbd></span></label>
+        <label title="Paint a whole connected region in one click"><input type="radio" name="brushmode" value="fill"><span>Fill <kbd>F</kbd></span></label>
+        <label title="Click a unit to see its numbers and split or merge it, without painting"><input type="radio" name="brushmode" value="select"><span>Select <kbd>S</kbd></span></label>
+        <label title="Drag to move the map"><input type="radio" name="brushmode" value="pan"><span>Pan <kbd>H</kbd></span></label>
       </div>
       <label class="sizerow">Size <kbd>[</kbd> <kbd>]</kbd>
         <input type="range" id="brush-size" min="1" max="5" step="1" value="1">
       </label>
-      <label class="chk"><input type="checkbox" id="opt-only-unassigned"> Unassigned only <kbd>U</kbd></label>
-      <button id="btn-keys" class="linkbtn">Shortcuts <kbd>?</kbd></button>
+      <div class="tworow">
+        <label class="chk"><input type="checkbox" id="opt-only-unassigned"> Unassigned only <kbd>U</kbd></label>
+        <button id="btn-keys" class="linkbtn">Keys <kbd>?</kbd></button>
+      </div>
     </section>
 
     <section class="tool-sec">
@@ -93,39 +96,43 @@
       <label class="sizerow" id="palette-row">Colors
         <select id="partisan-palette" title="Brown / teal and orange / purple are easier to tell apart with a color-vision deficiency"></select>
       </label>
-      <label class="chk"><input type="checkbox" id="opt-agg"> Precinct totals <kbd>T</kbd></label>
-      <label class="chk"><input type="checkbox" id="opt-unassigned" checked> Shade unassigned</label>
-      <label class="chk"><input type="checkbox" id="opt-opacity"> Dim shading</label>
+      <div class="chkgrid">
+        <label class="chk"><input type="checkbox" id="opt-agg"> Totals <kbd>T</kbd></label>
+        <label class="chk" title="Fade the shading so the basemap reads through"><input type="checkbox" id="opt-opacity"> Dim</label>
+        <label class="chk wide"><input type="checkbox" id="opt-unassigned" checked> Shade unassigned</label>
+      </div>
     </section>
 
     <section class="tool-sec">
       <h2>Overlays</h2>
-      <label class="chk"><input type="checkbox" id="ov-map7"> Map 7</label>
-      <label class="chk"><input type="checkbox" id="ov-cities"> Cities</label>
-      <label class="chk"><input type="checkbox" id="ov-comm"> Communities</label>
-      <label class="chk"><input type="checkbox" id="ov-labels" checked> Labels</label>
-    </section>
-
-    <section class="tool-sec">
-      <h2>Unit</h2>
-      <div id="unit-info" class="unit-info"></div>
+      <div class="chkgrid">
+        <label class="chk"><input type="checkbox" id="ov-map7"> Map 7</label>
+        <label class="chk"><input type="checkbox" id="ov-cities"> Cities</label>
+        <label class="chk"><input type="checkbox" id="ov-comm"> Communities</label>
+        <label class="chk"><input type="checkbox" id="ov-labels" checked> Labels</label>
+      </div>
     </section>
   </aside>
 
-  <div id="map-wrap">
-    <div id="map"></div>
-    <div id="box-rubber" hidden></div>
-    <div id="brush-ring" hidden></div>
-    <div id="map-note" class="map-note"></div>
-  </div>
-
-  <aside id="panel">
-    <div class="panel-head">
-      <h2>Analytics</h2>
-      <label class="chk inline"><input type="checkbox" id="cmp-map7" checked> Compare to Map 7</label>
+  <div id="center">
+    <div id="map-wrap">
+      <div id="map"></div>
+      <div id="box-rubber" hidden></div>
+      <div id="brush-ring" hidden></div>
+      <div id="unit-card" class="unit-card" hidden></div>
+      <div id="map-note" class="map-note"></div>
     </div>
-    <div id="panel-body"></div>
-  </aside>
+
+    <section id="dock">
+      <div class="dock-head">
+        <button id="dock-toggle" class="linkbtn" title="Show or hide the analytics (A)"><span id="dock-caret">▾</span> Analytics</button>
+        <label class="chk inline"><input type="checkbox" id="cmp-map7" checked> Compare to Map 7</label>
+        <span class="tb-spacer"></span>
+        <button id="btn-notes" class="linkbtn">Notes</button>
+      </div>
+      <div id="panel-body"></div>
+    </section>
+  </div>
 
 </main>
 

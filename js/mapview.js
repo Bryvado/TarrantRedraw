@@ -67,6 +67,7 @@ export class MapView {
     this.ready = false;
     this.onPick = () => {};
     this.onHover = () => {};
+    this.onSelect = () => {};
     this.blockFeatures = new Map();   // vtdIdx -> features array
 
     this.map = new maplibregl.Map({
@@ -172,6 +173,23 @@ export class MapView {
       },
     });
 
+    // The clicked unit: a VTD ring, or a block ring inside a split VTD.
+    m.addLayer({
+      id: 'vtd-selected-halo', type: 'line', source: 'vtd',
+      filter: ['==', ['id'], -1],
+      paint: { 'line-color': '#101113', 'line-width': 5, 'line-opacity': 0.75 },
+    });
+    m.addLayer({
+      id: 'vtd-selected', type: 'line', source: 'vtd',
+      filter: ['==', ['id'], -1],
+      paint: { 'line-color': '#ffe066', 'line-width': 2.6 },
+    });
+    m.addLayer({
+      id: 'block-selected', type: 'line', source: 'blocks',
+      filter: ['==', ['get', 'GEOID20'], ''],
+      paint: { 'line-color': '#ffe066', 'line-width': 2.4 },
+    });
+
     // Hover ring.
     m.addLayer({
       id: 'vtd-hover', type: 'line', source: 'vtd',
@@ -190,6 +208,9 @@ export class MapView {
     this.countyBounds = [[x0, y0], [x1, y1]];
     m.fitBounds(this.countyBounds, { padding: 24, duration: 0 });
     m.setMaxBounds([[x0 - 1.2, y0 - 1.0], [x1 + 1.2, y1 + 1.0]]);
+
+    // The map shares its column with the analytics dock, which can be folded.
+    new ResizeObserver(debounceFrame(() => m.resize())).observe(m.getContainer());
 
     this.ready = true;
     this.syncAllStates();
@@ -224,6 +245,15 @@ export class MapView {
       if (!this.blockFeatures.has(idx)) continue;
       for (const [g, d] of ov) m.setFeatureState({ source: 'blocks', id: g }, { d });
     }
+  }
+
+  /** Ring the selected unit. `vtdKey` alone rings a VTD; with `geoid`, the block too. */
+  setSelected(vtdKey, geoid) {
+    if (!this.ready) return;
+    const v = ['==', ['id'], vtdKey ?? -1];
+    this.map.setFilter('vtd-selected-halo', v);
+    this.map.setFilter('vtd-selected', v);
+    this.map.setFilter('block-selected', ['==', ['get', 'GEOID20'], geoid ?? '']);
   }
 
   // ---- shading ------------------------------------------------------------
@@ -343,6 +373,8 @@ export class MapView {
     this.spaceDown = false;
 
     let painting = false, boxing = false, boxStart = null, lastPt = null;
+    // A press that never moved is a click: it also selects the unit under it.
+    let downPt = null, moved = false;
     // Whether the drag in progress erases: fixed at mousedown, so a right-drag
     // keeps erasing for its whole length.
     let dragErase = false;
@@ -350,7 +382,11 @@ export class MapView {
     const ring = document.getElementById('brush-ring');
     this.brushRadius = this.brushRadius || 2;
 
-    const wantsPan = () => this.brushMode === 'pan' || this.spaceDown;
+    const wantsPan = () => this.brushMode === 'pan' || this.brushMode === 'select' || this.spaceDown;
+
+    const topAt = (pt) => m.queryRenderedFeatures(pt, {
+      layers: this.blockFeatures.size ? ['blocks-fill', 'vtd-fill'] : ['vtd-fill'],
+    })[0] || null;
 
     const moveRing = (pt) => {
       const show = pt && this.brushMode === 'click' && !this.spaceDown && this.brushRadius > 2;
@@ -387,9 +423,19 @@ export class MapView {
 
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
+    // Select and Pan never paint, and Ctrl/⌘+click selects from any tool.
+    m.on('click', (e) => {
+      const oe = e.originalEvent;
+      if (this.brushMode === 'select' || ((oe.ctrlKey || oe.metaKey) && oe.button === 0)
+        || (this.brushMode === 'pan' && !this.spaceDown)) {
+        this.onSelect(topAt(e.point));
+      }
+    });
+
     m.on('mousedown', (e) => {
       if (wantsPan()) return;                             // let the map pan
       const oe = e.originalEvent;
+      if ((oe.ctrlKey || oe.metaKey) && oe.button === 0) return;   // select, handled on click
       // Left button paints; right button (or Alt) erases.
       if (oe.button !== 0 && oe.button !== 2) return;
       dragErase = oe.button === 2 || oe.altKey;
@@ -408,7 +454,7 @@ export class MapView {
         oe.preventDefault();
         return;
       }
-      painting = true; lastPt = e.point;
+      painting = true; lastPt = e.point; downPt = e.point; moved = false;
       m.dragPan.disable();
       emitPick(pickAt(e.point), dragErase);
       oe.preventDefault();
@@ -427,6 +473,7 @@ export class MapView {
         // Step along the path so a fast drag does not skip units.
         const dx = e.point.x - lastPt.x, dy = e.point.y - lastPt.y;
         const dist = Math.hypot(dx, dy);
+        if (Math.hypot(e.point.x - downPt.x, e.point.y - downPt.y) > 3) moved = true;
         const steps = Math.max(1, Math.min(40, Math.ceil(dist / 6)));
         const seen = new Set();
         const acc = [];
@@ -463,6 +510,7 @@ export class MapView {
         painting = false;
         m.dragPan.enable();
         this.onPick({ commit: true });
+        if (!moved && !dragErase && downPt) this.onSelect(topAt(downPt));
       }
     };
     m.on('mouseup', finish);
@@ -500,7 +548,7 @@ export class MapView {
   setBrushMode(mode) {
     this.brushMode = mode;
     const c = this.map.getCanvasContainer();
-    c.style.cursor = mode === 'pan' ? '' : mode === 'fill' ? 'cell' : 'crosshair';
+    c.style.cursor = mode === 'pan' ? '' : mode === 'select' ? 'pointer' : mode === 'fill' ? 'cell' : 'crosshair';
     if (this._moveRing) this._moveRing(null);
   }
 
