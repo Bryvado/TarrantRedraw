@@ -1,0 +1,9 @@
+{
+"type": "FeatureCollection",
+"name": "8406",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"xy_coordinate_resolution": 1e-06,
+"features": [
+{ "type": "Feature", "properties": { "GEOID20": "484391136402021", "vtdkey": 8406.0, "pop": 0.0, "vap": 0.0, "vap_white": 0.0, "vap_black": 0.0, "vap_hisp": 0.0, "ndv": 0.0, "nrv": 0.0, "ndv26": 0.0, "nrv26": 0.0 }, "geometry": { "type": "MultiPolygon", "coordinates": [ [ [ [ -97.188012, 32.911599 ], [ -97.187986, 32.911661 ], [ -97.187947, 32.911757 ], [ -97.187728, 32.911749 ], [ -97.186725, 32.911745 ], [ -97.186598, 32.911752 ], [ -97.186596, 32.911629 ], [ -97.186596, 32.911442 ], [ -97.188058, 32.911518 ], [ -97.188012, 32.911599 ] ] ] ] } }
+]
+}

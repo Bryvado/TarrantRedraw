@@ -1,0 +1,11 @@
+{
+"type": "FeatureCollection",
+"name": "8285",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"xy_coordinate_resolution": 1e-06,
+"features": [
+{ "type": "Feature", "properties": { "GEOID20": "484391115561018", "vtdkey": 8285.0, "pop": 0.0, "vap": 0.0, "vap_white": 0.0, "vap_black": 0.0, "vap_hisp": 0.0, "ndv": 0.0, "nrv": 0.0, "ndv26": 0.0, "nrv26": 0.0 }, "geometry": { "type": "MultiPolygon", "coordinates": [ [ [ [ -97.067568, 32.69155 ], [ -97.065964, 32.691532 ], [ -97.065961, 32.691431 ], [ -97.067568, 32.691437 ], [ -97.067568, 32.69155 ] ] ] ] } },
+{ "type": "Feature", "properties": { "GEOID20": "484391115562021", "vtdkey": 8285.0, "pop": 18.0, "vap": 15.0, "vap_white": 0.0, "vap_black": 1.0, "vap_hisp": 9.0, "ndv": 0.62, "nrv": 0.15, "ndv26": 2.47, "nrv26": 0.61 }, "geometry": { "type": "MultiPolygon", "coordinates": [ [ [ [ -97.072166, 32.69153 ], [ -97.072148, 32.691608 ], [ -97.070578, 32.691602 ], [ -97.069584, 32.691574 ], [ -97.069584, 32.69146 ], [ -97.07057, 32.691474 ], [ -97.072166, 32.691481 ], [ -97.072166, 32.69153 ] ] ] ] } },
+{ "type": "Feature", "properties": { "GEOID20": "484391115562022", "vtdkey": 8285.0, "pop": 0.0, "vap": 0.0, "vap_white": 0.0, "vap_black": 0.0, "vap_hisp": 0.0, "ndv": 0.0, "nrv": 0.0, "ndv26": 0.0, "nrv26": 0.0 }, "geometry": { "type": "MultiPolygon", "coordinates": [ [ [ [ -97.069584, 32.691574 ], [ -97.067568, 32.69155 ], [ -97.067568, 32.691437 ], [ -97.068087, 32.69144 ], [ -97.068637, 32.69144 ], [ -97.069584, 32.69146 ], [ -97.069584, 32.691574 ] ] ] ] } }
+]
+}
