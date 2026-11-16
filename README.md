@@ -151,7 +151,9 @@ by name, and contiguity and Polsby-Popper from the adjacency file. The Map 7 num
 under each value for comparison. The full tables sit in a dock under the map, which folds
 away with `A`; the basics for each drawn precinct — population, deviation, partisan lean and
 Hispanic / Black / nonwhite VAP — stay on its row in the precinct picker. The tool rail is
-sized to fit a laptop screen without scrolling.
+sized to fit a laptop screen without scrolling. Drag the edge between the rail and the map,
+or between the map and the dock, to resize either; the sizes are remembered and a
+double-click on the edge resets them. The map attribution stays folded behind its ⓘ button.
 
 **The unit card.** Clicking a VTD or block opens a card in the corner of the map with its
 numbers and its Split / Merge button. It follows clicks, not the pointer, so it holds still

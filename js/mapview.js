@@ -88,10 +88,11 @@ export class MapView {
     this.map.addControl(new maplibregl.AttributionControl({
       compact: true,
       customAttribution: [
-        'Precincts drawn in Tarrant Redraw',
-        'Population &amp; VAP: 2020 U.S. Census (P.L. 94-171)',
-        'Election composites: Texas statewide contests 2020–2026',
-        'Neighborhoods: SimpleMaps; Communities of interest: Districtr',
+        'Tarrant Redraw',
+        '2020 Census (P.L. 94-171)',
+        'Texas statewide contests 2020–26',
+        'SimpleMaps',
+        'Districtr',
       ],
     }), 'bottom-right');
   }
@@ -211,6 +212,11 @@ export class MapView {
 
     // The map shares its column with the analytics dock, which can be folded.
     new ResizeObserver(debounceFrame(() => m.resize())).observe(m.getContainer());
+
+    // MapLibre opens the compact attribution on load; keep it folded behind
+    // its (i) button so it does not sit on the map.
+    const attrib = m.getContainer().querySelector('.maplibregl-ctrl-attrib');
+    if (attrib) { attrib.classList.remove('maplibregl-compact-show'); attrib.removeAttribute('open'); }
 
     this.ready = true;
     this.syncAllStates();
