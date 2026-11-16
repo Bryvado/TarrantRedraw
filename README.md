@@ -107,7 +107,11 @@ the wheel zooms. The lock next to each precinct stops it being painted over.
 | `1` `2` `3` `4` | Pick a precinct |
 | `0` or `E` | Pick the eraser |
 | `I` | Pick the precinct under the cursor |
-| `B` / `M` / `F` / `H` | Brush / box select / fill region / pan |
+| `B` / `M` / `F` / `S` / `H` | Brush / box select / fill region / select / pan |
+| Click | Open the unit card for that VTD or block |
+| `Ctrl`+click | The same, without painting |
+| `A` | Show or hide the analytics under the map |
+| `Esc` | Close the unit card |
 | `Shift`+drag | Box select, whatever tool is active |
 | `[` and `]` | Smaller / larger brush |
 | `U` | Paint unassigned only, on or off |
@@ -144,7 +148,15 @@ separate toggles.
 user-set tolerance flag, Democratic share per precinct on the composite and on 2026 with
 the count of Democratic-leaning precincts, VAP shares, cities and communities split listed
 by name, and contiguity and Polsby-Popper from the adjacency file. The Map 7 numbers sit
-under each value for comparison.
+under each value for comparison. The full tables sit in a dock under the map, which folds
+away with `A`; the basics for each drawn precinct — population, deviation, partisan lean and
+Hispanic / Black / nonwhite VAP — stay on its row in the precinct picker. The tool rail is
+sized to fit a laptop screen without scrolling.
+
+**The unit card.** Clicking a VTD or block opens a card in the corner of the map with its
+numbers and its Split / Merge button. It follows clicks, not the pointer, so it holds still
+while you reach for the button. A plain click with a paint tool paints the unit and opens
+its card; the **Select** tool (`S`) and `Ctrl`+click open it without painting.
 
 **Plans** autosave to `localStorage` continuously; **Plans…** keeps separate named copies,
 with duplicate and delete.
@@ -162,9 +174,11 @@ with duplicate and delete.
 
 ## Block-level splitting
 
-Block editing is an option, not the default. **Split this VTD into blocks** in the
-*Selected unit* box fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks
-individually. A plan is stored as a VTD-level assignment plus block-level overrides.
+Block editing is an option, not the default. **Split into blocks** on a VTD's unit card
+fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks individually. **Merge**
+is on the same card, whether you clicked the split VTD or any one of its blocks, and
+collapses the VTD back to the precinct holding most of its population. A plan is stored as
+a VTD-level assignment plus block-level overrides.
 
 - When a VTD is split, the analytics use its blocks' numbers in place of the VTD's.
 - Contiguity and Polsby-Popper stay VTD-level, with a split VTD counted at its

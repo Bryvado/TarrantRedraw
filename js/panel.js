@@ -26,7 +26,6 @@ export class Panel {
       this.demographics(mx, cmp),
       this.geometry(mx, cmp),
       this.splits(mx, cmp),
-      this.footnotes(mx),
     );
     const tol = this.root.querySelector('#tol-input');
     if (tol) {
@@ -87,7 +86,7 @@ export class Panel {
 
   // ---- partisan -----------------------------------------------------------
   partisan(mx, cmp) {
-    const b = block('Partisan lean', 'shares from summed votes');
+    const b = block('Partisan lean', '');
     const rows = [];
     for (let d = 1; d <= 4; d++) {
       const r = mx.rows[d], c = cmp && cmp.rows[d];
@@ -100,9 +99,9 @@ export class Panel {
     rows.push(`<tr class="tot"><td>County</td>
       <td>${fmtPct(mx.total.dshare)}</td><td>${fmtPct(mx.total.share26)}</td></tr>`);
     b.append(table(['Precinct', 'Composite D', '2026 D'], rows));
-    b.append(el('div', { class: 'tolrow' }, [
+    b.append(el('div', { class: 'tolrow wrap' }, [
       el('span', { html:
-        `Democratic-leaning: <strong>${mx.demComp}</strong> of 4 composite, ` +
+        `D-leaning: <strong>${mx.demComp}</strong> of 4 composite, ` +
         `<strong>${mx.dem26}</strong> of 4 on 2026` +
         (cmp ? ` <span class="cmp">(Map 7: ${cmp.demComp} / ${cmp.dem26})</span>` : '') }),
     ]));
@@ -111,7 +110,7 @@ export class Panel {
 
   // ---- demographics -------------------------------------------------------
   demographics(mx, cmp) {
-    const b = block('Voting-age population', '2020 Census');
+    const b = block('Voting-age population', '');
     const rows = [];
     for (let d = 1; d <= 4; d++) {
       const r = mx.rows[d], c = cmp && cmp.rows[d];
@@ -132,7 +131,7 @@ export class Panel {
   // ---- geometry -----------------------------------------------------------
   geometry(mx, cmp) {
     const bad = mx.geom.slice(1).filter((g) => !g.contiguous && !g.empty);
-    const b = block('Contiguity &amp; compactness', 'from vtd_adj.json');
+    const b = block('Contiguity &amp; compactness', '');
     const rows = [];
     for (let d = 1; d <= 4; d++) {
       const g = mx.geom[d], c = cmp && cmp.geom[d];
@@ -160,47 +159,38 @@ export class Panel {
 
   // ---- splits -------------------------------------------------------------
   splits(mx, cmp) {
-    const b = block('Splits', '');
-    b.append(table(
-      ['', 'Split', 'Total'],
-      [
-        `<tr><td>Cities</td>
-          <td class="${mx.cities.splitCount ? 'flag' : 'good'}">${this.cell(
-            fmtInt(mx.cities.splitCount), cmp && fmtInt(cmp.cities.splitCount))}</td>
-          <td>${fmtInt(mx.cities.total)}</td></tr>`,
-        `<tr><td>Communities</td>
-          <td class="${mx.comms.splitCount ? 'flag' : 'good'}">${this.cell(
-            fmtInt(mx.comms.splitCount), cmp && fmtInt(cmp.comms.splitCount))}</td>
-          <td>${fmtInt(mx.comms.total)}</td></tr>`,
-      ],
-    ));
-
-    b.append(el('h3', { style: 'margin-top:12px', html:
-      `Cities split <span class="h3note">${mx.cities.splitCount} of ${mx.cities.total} with VTDs</span>` }));
-    b.append(splitList(mx.cities.splits));
-
-    b.append(el('h3', { style: 'margin-top:12px', html:
-      'Communities split <span class="h3note">mapped communities only</span>' }));
-    b.append(splitList(mx.comms.splits));
-    b.append(el('div', { class: 'legend-note', text:
-      `${mx.comms.total} communities have VTDs assigned to them; the other ` +
-      'neighborhoods in the overlay are not carried on any VTD, so they are not counted.' }));
+    const b = el('section', { class: 'pblock pblock-wide' });
+    const head = (label, m, c) =>
+      `${label} <span class="h3note"><b class="${m.splitCount ? 'flag' : 'good'}">${m.splitCount}</b> of ${m.total}`
+      + `${c ? ` · Map 7: ${c.splitCount}` : ''}</span>`;
+    const lists = el('div', { class: 'splitcols' }, [
+      el('div', {}, [
+        el('h3', { html: head('Cities split', mx.cities, cmp && cmp.cities) }),
+        splitList(mx.cities.splits),
+      ]),
+      el('div', {}, [
+        el('h3', { html: head('Communities split', mx.comms, cmp && cmp.comms) }),
+        splitList(mx.comms.splits),
+      ]),
+    ]);
+    b.append(lists);
     return b;
   }
 
-  footnotes(mx) {
-    const b = block('Notes', '');
-    b.append(el('div', { class: 'legend-note', html: [
+  /** The standing caveats, shown from the dock's Notes button. */
+  notesHTML(mx) {
+    return [
       'Shares are computed from summed votes, never by averaging VTD shares.',
       'The 2026 measure is the mean of U.S. Senate and Governor. The 2026 county ' +
         'commissioner race was on the ballot in only two precincts, so it is not in the data.',
       'Per-precinct baseline (2020–24) share cannot be aggregated: the data carries ' +
         'the baseline only as a VTD share, with no baseline vote counts. It is available as a shading mode.',
       '86 VTDs have no population and 80 have no votes; they contribute zero to every total.',
+      `${mx.comms.total} communities have VTDs assigned to them; the other neighborhoods in the ` +
+        'overlay are not carried on any VTD, so they are not counted as split or whole.',
       mx.nSplit ? `${mx.nSplit} VTD${mx.nSplit > 1 ? 's' : ''} split to blocks. Block-level partisan ` +
         'figures are estimates: each VTD’s votes are spread across its blocks by voting-age population.' : null,
-    ].filter(Boolean).map((s) => `<p style="margin:0 0 6px">${s}</p>`).join('') }));
-    return b;
+    ].filter(Boolean).map((t) => `<p>${t}</p>`).join('');
   }
 }
 

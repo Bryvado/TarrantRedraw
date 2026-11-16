@@ -26,7 +26,8 @@ let data, topo, state, mapView, panel;
 let activePrecinct = 1;
 let refMetrics = null;
 let lastMetrics = null;
-let hoverTarget = null;
+let hoverTarget = null;          // unit under the cursor, for the eyedropper
+let selected = null;             // unit the user clicked, shown in the map card
 let onlyUnassigned = false;
 const BRUSH_PX = [2, 9, 18, 30, 46];     // slider 1..5 -> half-width in pixels
 
@@ -65,6 +66,7 @@ async function boot() {
 
   mapView.onPick = handlePick;
   mapView.onHover = handleHover;
+  mapView.onSelect = handleSelect;
 
   buildPrecinctList();
   wireToolbar();
@@ -93,6 +95,7 @@ async function boot() {
     sniffCSV, applyVtdImport, applyBlockImport, flattenToVtd,
     setActive: (d) => setActive(d),
     doSplit, doUnsplit,
+    select: (idx) => selectVtd(idx), get selected() { return selected; },
   };
 
   bar.style.width = '100%';
@@ -142,6 +145,7 @@ function recompute(force) {
   updatePrecinctPops(lastMetrics);
   updateMapNote(lastMetrics);
   applyAggShading();
+  renderUnitInfo();
 }
 
 // Shading modes that can be totalled for a drawn precinct, and the metrics
@@ -298,58 +302,96 @@ function fillRegion(start, target) {
   }
 }
 
-function handleHover(feat) {
-  if (!feat) { hoverTarget = null; return; }
-  const isBlock = feat.layer.id === 'blocks-fill';
-  hoverTarget = isBlock
+function targetOf(feat) {
+  if (!feat) return null;
+  return feat.layer.id === 'blocks-fill'
     ? { kind: 'block', geoid: feat.properties.GEOID20, key: feat.properties.vtdkey, p: feat.properties }
     : { kind: 'vtd', key: feat.properties.vtdkey, idx: data.idxOf.get(feat.properties.vtdkey), p: feat.properties };
+}
+
+// Hovering only feeds the eyedropper. The unit card follows clicks, so it
+// holds still while the pointer travels to its buttons.
+function handleHover(feat) { hoverTarget = targetOf(feat); }
+
+function handleSelect(feat) {
+  selected = targetOf(feat);
   renderUnitInfo();
 }
 
+let vtdPropsByKey = null;
+function vtdProps(key) {
+  if (!vtdPropsByKey) {
+    vtdPropsByKey = new Map(data.vtdGeo.features.map((f) => [f.properties.vtdkey, f.properties]));
+  }
+  return vtdPropsByKey.get(key);
+}
+
+function selectVtd(idx) {
+  const key = data.keys[idx];
+  selected = { kind: 'vtd', key, idx, p: vtdProps(key) };
+  renderUnitInfo();
+}
+
+function clearSelection() { selected = null; renderUnitInfo(); }
+
 function renderUnitInfo() {
-  const box = $('#unit-info');
-  if (!hoverTarget) { box.textContent = ''; return; }
-  const t = hoverTarget;
+  const box = $('#unit-card');
+  // A selected block whose VTD is no longer split (merge, undo, a repaint)
+  // falls back to the VTD it belongs to.
+  if (selected && selected.kind === 'block') {
+    const idx = data.idxOf.get(selected.key);
+    if (idx === undefined || !state.isSplit(idx)) {
+      selected = idx === undefined ? null : { kind: 'vtd', key: selected.key, idx, p: vtdProps(selected.key) };
+    }
+  }
+  const t = selected;
+  mapView.setSelected(t ? t.key : null, t && t.kind === 'block' ? t.geoid : null);
+  box.hidden = !t;
+  if (!t) { box.innerHTML = ''; return; }
+
   const rows = [];
   const add = (k, v) => rows.push(`<tr><td>${k}</td><td>${v}</td></tr>`);
+  const head = (title) => {
+    box.innerHTML = '';
+    box.append(el('div', { class: 'uc-head' }, [
+      el('span', { text: title }),
+      el('button', { class: 'm-close', text: '×', title: 'Close (Esc)', onclick: clearSelection }),
+    ]));
+  };
+  const pname = (d) => (d ? `<span class="pdot" style="background:${PRECINCT[d - 1]}"></span>${d}` : 'unassigned');
 
   if (t.kind === 'vtd') {
     const i = t.idx, p = t.p;
-    const d = state.asn[i];
-    box.innerHTML = `<div class="ui-head">VTD ${t.key}</div>`;
-    add('Precinct', d === 0 ? 'unassigned' : `${d}`);
+    const split = state.isSplit(i);
+    head(`VTD ${t.key}`);
+    add('Precinct', split ? `split · mostly ${pname(state.majorityOf(i, mapView.blockPopMap(i)))}` : pname(state.asn[i]));
     add('City', p.city_name ?? '—');
     add('Community', data.comm[i] != null ? (data.commName.get(data.comm[i]) ?? data.comm[i]) : '—');
-    add('Population', fmtInt(data.num.pop[i]));
-    add('VAP', fmtInt(data.num.vap[i]));
-    add('Hisp / Black VAP', `${fmtPct(p.f_hisp, 0)} / ${fmtPct(p.f_black, 0)}`);
-    add('Nonwhite VAP', fmtPct(p.f_nonwhite, 0));
-    add('D composite', p.dshare == null ? 'no votes' : fmtPct(p.dshare));
-    add('D 2026', p.share26 == null ? 'no votes' : fmtPct(p.share26));
-    add('D baseline 20–24', p.dshare_pre == null ? 'no votes' : fmtPct(p.dshare_pre));
-    add('2026 shift', p.shift26 == null ? '—' : fmtSigned(p.shift26));
+    add('Population / VAP', `${fmtInt(data.num.pop[i])} / ${fmtInt(data.num.vap[i])}`);
+    add('Hisp / Black / Nonwhite', `${fmtPct(p.f_hisp, 0)} / ${fmtPct(p.f_black, 0)} / ${fmtPct(p.f_nonwhite, 0)}`);
+    add('D composite / 2026', `${p.dshare == null ? '—' : fmtPct(p.dshare)} / ${p.share26 == null ? '—' : fmtPct(p.share26)}`);
+    add('D 2020–24 / shift', `${p.dshare_pre == null ? '—' : fmtPct(p.dshare_pre)} / ${p.shift26 == null ? '—' : fmtSigned(p.shift26)}`);
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
-
-    if (state.isSplit(i)) {
-      box.append(el('button', { text: 'Merge blocks', onclick: () => doUnsplit(i) }));
+    if (split) {
+      box.append(el('div', { class: 'uc-note', text: `Split into ${state.blockOv.get(i).size} blocks. Paint them one by one.` }));
+      box.append(el('button', { text: 'Merge blocks back into one VTD', onclick: () => doUnsplit(i) }));
     } else {
       box.append(el('button', { text: 'Split into blocks', onclick: () => doSplit(i) }));
     }
   } else {
     const p = t.p;
-    box.innerHTML = `<div class="ui-head">Block ${t.geoid}</div>`;
     const idx = data.idxOf.get(t.key);
-    const ov = idx !== undefined ? state.blockOv.get(idx) : null;
-    add('Precinct', ov ? (ov.get(t.geoid) || 'unassigned') : '—');
-    add('In VTD', t.key);
-    add('Population', fmtInt(p.pop));
-    add('VAP', fmtInt(p.vap));
-    add('Hisp / Black VAP', `${fmtPct(p.f_hisp, 0)} / ${fmtPct(p.f_black, 0)}`);
-    add('D composite *', p.dshare == null ? 'no votes' : fmtPct(p.dshare));
-    add('D 2026 *', p.share26 == null ? 'no votes' : fmtPct(p.share26));
+    const ov = state.blockOv.get(idx);
+    head(`Block ${t.geoid}`);
+    add('Precinct', pname(ov.get(t.geoid) || 0));
+    add('In VTD', `${t.key} · ${ov.size} blocks`);
+    add('Population / VAP', `${fmtInt(p.pop)} / ${fmtInt(p.vap)}`);
+    add('Hisp / Black', `${fmtPct(p.f_hisp, 0)} / ${fmtPct(p.f_black, 0)}`);
+    add('D composite / 2026 *', `${p.dshare == null ? '—' : fmtPct(p.dshare)} / ${p.share26 == null ? '—' : fmtPct(p.share26)}`);
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
-    box.insertAdjacentHTML('beforeend', '<div class="legend-note">* estimate</div>');
+    box.insertAdjacentHTML('beforeend', '<div class="uc-note">* estimated from the VTD’s votes</div>');
+    box.append(el('button', { text: `Merge VTD ${t.key} back into one unit`, onclick: () => doUnsplit(idx) }));
+    box.append(el('button', { class: 'linkbtn', text: 'Show the whole VTD', onclick: () => selectVtd(idx) }));
   }
 }
 
@@ -372,6 +414,7 @@ function buildPrecinctList() {
         text: state.locks[d - 1] ? '\u{1F512}' : '\u{1F513}',
         onclick: (e) => { e.stopPropagation(); toggleLock(d); },
       }),
+      el('span', { class: 'pk-stats', 'data-stats': d }),
     ]);
     host.append(btn);
   }
@@ -395,13 +438,22 @@ function toggleLock(d) {
   setStatus(`Precinct ${d} ${state.locks[d - 1] ? 'locked' : 'unlocked'}.`);
 }
 
+/** The basics for each drawn precinct, on its picker row. */
 function updatePrecinctPops(mx) {
+  const pc = (x) => (x == null ? '—' : Math.round(x * 100));
   for (let d = 1; d <= 4; d++) {
+    const r = mx.rows[d];
     const n = document.querySelector(`[data-pop="${d}"]`);
-    if (n) {
-      n.textContent = fmtInt(mx.rows[d].pop);
-      n.className = 'pk-pop' + (mx.rows[d].overTol ? ' flag-bad' : '');
-    }
+    if (n) n.textContent = fmtInt(r.pop);
+    const st = document.querySelector(`[data-stats="${d}"]`);
+    if (!st) continue;
+    if (!r.units) { st.innerHTML = '<span class="dim">empty</span>'; continue; }
+    const lean = r.dshare == null ? '—'
+      : `${r.dshare >= 0.5 ? 'D' : 'R'}+${(Math.abs(r.dshare - 0.5) * 200).toFixed(1)}`;
+    st.innerHTML =
+      `<span class="${r.overTol ? 'flag-bad' : ''}" title="Deviation from the ideal population">${fmtSigned(r.dev, 1)}</span>`
+      + `<span title="Composite lean: ${fmtPct(r.dshare)} Democratic · 2026: ${fmtPct(r.share26)}">${lean}</span>`
+      + `<span title="Hispanic / Black / nonwhite share of voting-age population">H${pc(r.hisp)} B${pc(r.black)} NW${pc(r.nonwhite)}</span>`;
   }
 }
 
@@ -435,6 +487,14 @@ function wireToolbar() {
   $('#btn-export-block').onclick = () => exportBlocks();
   $('#btn-export-menu').onclick = showExportDialog;
   $('#btn-import').onclick = showImportDialog;
+  $('#btn-notes').onclick = () => openModal('Notes', [el('div', { html: panel.notesHTML(lastMetrics) })]);
+  const setDock = (open) => {
+    $('#dock').classList.toggle('closed', !open);
+    $('#dock-caret').textContent = open ? '▾' : '▸';
+    prefs.set('dockOpen', open);
+  };
+  setDock(prefs.get('dockOpen', true));
+  $('#dock-toggle').onclick = (e) => { setDock($('#dock').classList.contains('closed')); e.currentTarget.blur(); };
   $('#cmp-map7').onchange = (e) => {
     panel.compare = e.target.checked;
     prefs.set('compare', panel.compare);
@@ -456,6 +516,7 @@ function wireToolbar() {
       setActive(Number(e.key));
     } else if (e.key === 'Escape') {
       closeModal();
+      clearSelection();
     } else {
       const k = e.key.toLowerCase();
       if (k === 'z') state.undo();
@@ -465,6 +526,8 @@ function wireToolbar() {
       else if (k === 'm') setBrushMode('box');
       else if (k === 'f') setBrushMode('fill');
       else if (k === 'h') setBrushMode('pan');
+      else if (k === 's') setBrushMode('select');
+      else if (k === 'a') $('#dock-toggle').click();
       else if (k === '[') stepBrushSize(-1);
       else if (k === ']') stepBrushSize(1);
       else if (k === 'u') { const c = $('#opt-only-unassigned'); c.checked = !c.checked; c.onchange(); }
@@ -621,7 +684,11 @@ function showKeysDialog() {
     ['1 2 3 4', 'Pick a precinct'],
     ['0 or E', 'Pick the eraser'],
     ['I', 'Pick the precinct under the cursor'],
-    ['B / M / F / H', 'Brush / box select / fill region / pan'],
+    ['Click', 'Show that unit’s numbers, with Split / Merge, in the card on the map'],
+    ['Ctrl+click, or the Select tool', 'The same, without painting'],
+    ['B / M / F / S / H', 'Brush / box / fill region / select / pan'],
+    ['A', 'Show or hide the analytics under the map'],
+    ['Esc', 'Close the unit card'],
     ['[ and ]', 'Smaller / larger brush'],
     ['U', 'Paint unassigned only, on or off'],
     ['L', 'Lock or unlock the active precinct'],
@@ -653,19 +720,12 @@ function renderLegend(aggColors = mapView.aggColors) {
     <div class="legend-bar" style="background:${gradientCSS(m.ramp)}"></div>
     <div class="legend-ends"><span>${party ? 'R ' : ''}${pct(m.lo)}</span>
       <span>${m.mid != null ? pct(m.mid) : ''}</span><span>${pct(m.hi)}${party ? ' D' : ''}</span></div>`;
-  if (aggColors && AGG_FIELD[mode] && lastMetrics) {
-    host.insertAdjacentHTML('beforeend', `<div class="agg-legend">
-      ${[1, 2, 3, 4].map((d) => `<span><span class="pdot" style="background:${aggColors[d]}"></span>Pct ${d}
-        <b>${fmtPct(lastMetrics.rows[d][AGG_FIELD[mode]])}</b></span>`).join('')}
-    </div>`);
-  }
 }
 
 // ------------------------------------------------------- block splitting ----
 async function doSplit(idx) {
   const key = data.keys[idx];
   if (state.isSplit(idx)) return;
-  const t0 = performance.now();
   setStatus(`Loading blocks for VTD ${key}…`);
   try {
     const gj = await loadBlocks(key);
@@ -678,8 +738,8 @@ async function doSplit(idx) {
     // Frame the VTD so its blocks are workable.
     const b = bboxOf(data.vtdGeo.features.find((f) => f.properties.vtdkey === key));
     if (b) mapView.map.fitBounds(b, { padding: 80, duration: 400, maxZoom: 15 });
-    setStatus(`VTD ${key} split into ${gj.features.length} blocks in ${Math.round(performance.now() - t0)} ms.`, 'ok');
-    renderUnitInfo();
+    setStatus(`VTD ${key} split into ${gj.features.length} blocks. Paint them one at a time; Merge undoes the split.`, 'ok');
+    selectVtd(idx);
   } catch (e) {
     setStatus(`Could not load blocks for VTD ${key}: ${e.message}`, 'warn');
   }
@@ -693,8 +753,8 @@ function doUnsplit(idx) {
   mapView.setVtdState(idx, state.asn[idx]);
   mapView.refreshOutlines();
   recompute(false);
-  setStatus(`VTD ${data.keys[idx]} merged back to Precinct ${state.asn[idx] || 'unassigned'}.`);
-  renderUnitInfo();
+  setStatus(`VTD ${data.keys[idx]} merged back ${state.asn[idx] ? `into Precinct ${state.asn[idx]}` : 'to unassigned'}.`);
+  selectVtd(idx);
 }
 
 function bboxOf(feature) {
