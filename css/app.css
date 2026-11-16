@@ -243,3 +243,6 @@ table.keys td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg)}
 .agg-legend .legend-note{grid-column:1/-1;margin:0 0 2px}
 .agg-legend b{color:var(--fg);font:11px var(--mono);margin-left:3px}
 .chk:has(input:disabled){opacity:.45;cursor:default}
+
+#palette-row{margin:9px 0 2px}
+#palette-row select{flex:1;min-width:0;padding:3px 5px;font-size:12px}

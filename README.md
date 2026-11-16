@@ -147,10 +147,9 @@ with duplicate and delete.
 
 ### Colors
 
-Fixed, and deliberately not the usual red-vs-blue:
-
-- Partisan level: brown `#8c510a` → off-white `#f5f5f5` → teal `#01665e`, centered at 50%.
-  Teal is the Democratic end.
+- Partisan level: **red → off-white → blue** by default, centered at 50%, blue the Democratic
+  end. **Party colors** under Shading switches to brown / teal or orange / purple, which are
+  easier to tell apart with a color-vision deficiency. The choice is remembered per browser.
 - Change over time: purple `#762a83` → green `#1b7837`, centered at 0.
 - Demographic shares: one single-hue sequential ramp.
 - Precincts 1–4: `#1b9e77`, `#e6ab02`, `#7570b3`, `#666666`.

@@ -1,7 +1,9 @@
 // MapLibre view: VTD fill painted through feature-state, dissolved precinct
 // outlines on top, optional overlays, and the paint interactions.
 
-import { PRECINCT, UNASSIGNED, NODATA, PARTISAN, SHIFT, SEQ, interpolateExpr } from './colors.js';
+import {
+  PRECINCT, UNASSIGNED, NODATA, PARTISAN_PALETTES, DEFAULT_PARTISAN, SHIFT, SEQ, interpolateExpr,
+} from './colors.js';
 import { dissolveLines } from './topology.js';
 import { debounceFrame } from './util.js';
 
@@ -12,14 +14,21 @@ const EMPTY = { type: 'FeatureCollection', features: [] };
 /** Shading modes: how each one colours the VTD fill. */
 export const SHADE_MODES = {
   district: { label: 'Assigned precinct', kind: 'cat' },
-  dshare: { label: 'Democratic share — composite', kind: 'div', prop: 'dshare', ramp: PARTISAN, lo: 0.2, hi: 0.8, mid: 0.5 },
-  share26: { label: 'Democratic share — 2026', kind: 'div', prop: 'share26', ramp: PARTISAN, lo: 0.2, hi: 0.8, mid: 0.5 },
-  dshare_pre: { label: 'Democratic share — 2020–24 baseline', kind: 'div', prop: 'dshare_pre', ramp: PARTISAN, lo: 0.2, hi: 0.8, mid: 0.5 },
+  dshare: { label: 'Democratic share — composite', kind: 'div', prop: 'dshare', ramp: PARTISAN_PALETTES[DEFAULT_PARTISAN].stops, partisan: true, lo: 0.2, hi: 0.8, mid: 0.5 },
+  share26: { label: 'Democratic share — 2026', kind: 'div', prop: 'share26', ramp: PARTISAN_PALETTES[DEFAULT_PARTISAN].stops, partisan: true, lo: 0.2, hi: 0.8, mid: 0.5 },
+  dshare_pre: { label: 'Democratic share — 2020–24 baseline', kind: 'div', prop: 'dshare_pre', ramp: PARTISAN_PALETTES[DEFAULT_PARTISAN].stops, partisan: true, lo: 0.2, hi: 0.8, mid: 0.5 },
   shift26: { label: '2026 shift vs baseline', kind: 'div', prop: 'shift26', ramp: SHIFT, lo: -0.15, hi: 0.15, mid: 0 },
   hisp: { label: 'Hispanic share of VAP', kind: 'seq', prop: 'f_hisp', ramp: SEQ, lo: 0, hi: 0.9 },
   black: { label: 'Black share of VAP', kind: 'seq', prop: 'f_black', ramp: SEQ, lo: 0, hi: 0.9 },
   nonwhite: { label: 'Nonwhite share of VAP', kind: 'seq', prop: 'f_nonwhite', ramp: SEQ, lo: 0, hi: 1 },
 };
+
+/** Switch the palette used by the three Democratic-share modes. */
+export function setPartisanPalette(name) {
+  const pal = PARTISAN_PALETTES[name] || PARTISAN_PALETTES[DEFAULT_PARTISAN];
+  for (const m of Object.values(SHADE_MODES)) if (m.partisan) m.ramp = pal.stops;
+  return pal;
+}
 
 const districtColorExpr = () => [
   'match', ['to-string', ['feature-state', 'd']],
