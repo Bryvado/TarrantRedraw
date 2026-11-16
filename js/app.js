@@ -162,6 +162,11 @@ function applyAggShading() {
   box.disabled = mode !== 'district' && !field;
   box.closest('label').title = box.disabled
     ? 'Not available for this measure: the data has no baseline vote counts to total by precinct.' : '';
+  const un = $('#opt-unassigned');
+  un.disabled = mode === 'district';
+  un.closest('label').title = un.disabled
+    ? 'Only for a partisan or demographic measure: the precinct view has no per-unit shading to keep.'
+    : 'Keep each unassigned unit shaded by its own value on this measure.';
   const active = aggOn && !!field && !!lastMetrics;
   let colors = null;
   if (active) {
@@ -558,6 +563,14 @@ function wireTools() {
     if (aggOn && $('#shade-mode').value === 'district') {
       setStatus('Pick a partisan or demographic shading to see precinct totals.');
     }
+  };
+
+  const unas = $('#opt-unassigned');
+  unas.checked = prefs.get('shadeUnassigned', true);
+  mapView.setShadeUnassigned(unas.checked);
+  unas.onchange = () => {
+    mapView.setShadeUnassigned(unas.checked);
+    prefs.set('shadeUnassigned', unas.checked);
   };
 
   $('#opt-opacity').onchange = (e) => mapView.setDimUnder(e.target.checked);
