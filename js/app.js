@@ -25,6 +25,8 @@ let activePrecinct = 1;
 let refMetrics = null;
 let lastMetrics = null;
 let hoverTarget = null;
+let onlyUnassigned = false;
+const BRUSH_PX = [2, 9, 18, 30, 46];     // slider 1..5 -> half-width in pixels
 
 // ---------------------------------------------------------------- boot ----
 boot().catch((err) => {
@@ -171,7 +173,7 @@ function onStateChange(detail) {
 }
 
 // --------------------------------------------------------------- picking ----
-function handlePick({ vtds, blocks, erase, commit }) {
+function handlePick({ vtds, blocks, erase, commit, fill }) {
   if (commit) {
     if (state.commit('paint')) { scheduleRecompute(); scheduleOutlines(); }
     return;
@@ -180,6 +182,19 @@ function handlePick({ vtds, blocks, erase, commit }) {
   if (target !== 0 && state.isLocked(target)) {
     setStatus(`Precinct ${target} is locked.`, 'warn');
     return;
+  }
+
+  if (fill !== undefined) { fillRegion(fill, target); return; }
+
+  // "Paint unassigned only" protects everything already drawn. Erasing is exempt.
+  if (onlyUnassigned && target !== 0) {
+    if (vtds) vtds = vtds.filter((i) => state.asn[i] === 0);
+    if (blocks) {
+      blocks = blocks.filter(([g, key]) => {
+        const ov = state.blockOv.get(data.idxOf.get(key));
+        return ov && (ov.get(g) ?? 0) === 0;
+      });
+    }
   }
 
   if (vtds && vtds.length) {
@@ -206,6 +221,37 @@ function handlePick({ vtds, blocks, erase, commit }) {
       if (changed.length) any = true;
     }
     if (any) { scheduleRecompute(); scheduleOutlines(); }
+  }
+}
+
+/**
+ * Flood fill: give the clicked VTD, and every VTD connected to it that shares
+ * its current assignment, to the target. Filling an unassigned pocket is the
+ * common use; filling a precinct recolours that whole contiguous piece.
+ */
+function fillRegion(start, target) {
+  if (start === undefined) return;
+  if (state.isSplit(start)) { setStatus('Fill works on whole VTDs; this one is split into blocks.', 'warn'); return; }
+  const from = state.asn[start];
+  if (from === target) return;
+  if (state.isLocked(from)) { setStatus(`Precinct ${from} is locked.`, 'warn'); return; }
+  const seen = new Uint8Array(data.n);
+  const stack = [start], region = [];
+  seen[start] = 1;
+  while (stack.length) {
+    const v = stack.pop();
+    region.push(v);
+    for (let k = data.nbrStart[v]; k < data.nbrStart[v + 1]; k++) {
+      const w = data.nbr[k];
+      if (!seen[w] && state.asn[w] === from && !state.isSplit(w)) { seen[w] = 1; stack.push(w); }
+    }
+  }
+  const changed = state.paint(region, target);
+  for (const i of changed) mapView.setVtdState(i, target);
+  if (state.commit('paint')) {
+    scheduleRecompute(); scheduleOutlines();
+    setStatus(`Filled ${changed.length} VTD${changed.length === 1 ? '' : 's'} `
+      + `${target ? `into Precinct ${target}` : 'back to unassigned'}. Z undoes it.`);
   }
 }
 
@@ -358,19 +404,45 @@ function wireToolbar() {
   };
 
   window.addEventListener('keydown', (e) => {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    if (isTyping()) return;
+    if (!$('#modal-back').hidden) { if (e.key === 'Escape') closeModal(); return; }
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       e.shiftKey ? state.redo() : state.undo();
     } else if (mod && e.key.toLowerCase() === 'y') {
       e.preventDefault(); state.redo();
-    } else if (!mod && /^[0-4]$/.test(e.key)) {
+    } else if (mod || e.altKey) {
+      // Leave every other browser shortcut alone (Ctrl+R still reloads).
+    } else if (/^[0-4]$/.test(e.key)) {
       setActive(Number(e.key));
     } else if (e.key === 'Escape') {
       closeModal();
+    } else {
+      const k = e.key.toLowerCase();
+      if (k === 'z') state.undo();
+      else if (k === 'r') state.redo();
+      else if (k === 'e') setActive(0);
+      else if (k === 'b') setBrushMode('click');
+      else if (k === 'm') setBrushMode('box');
+      else if (k === 'f') setBrushMode('fill');
+      else if (k === 'h') setBrushMode('pan');
+      else if (k === '[') stepBrushSize(-1);
+      else if (k === ']') stepBrushSize(1);
+      else if (k === 'u') { const c = $('#opt-only-unassigned'); c.checked = !c.checked; c.onchange(); }
+      else if (k === 'l') { if (activePrecinct) toggleLock(activePrecinct); }
+      else if (k === 'i') eyedropper();
+      else if (k === '?' || k === '/') showKeysDialog();
     }
   });
+}
+
+/** True while the user is typing in a field, so single-key shortcuts stay out of the way. */
+function isTyping() {
+  const a = document.activeElement;
+  if (!a) return false;
+  if (a.tagName === 'TEXTAREA' || a.tagName === 'SELECT') return true;
+  return a.tagName === 'INPUT' && /^(text|number|search|)$/.test(a.type || '');
 }
 
 function updateUndoButtons() {
@@ -395,6 +467,27 @@ function wireTools() {
   }
   mapView.setBrushMode('click');
 
+  const size = $('#brush-size');
+  size.value = prefs.get('brushSize', 1);
+  size.oninput = () => {
+    mapView.setBrushRadius(BRUSH_PX[size.value - 1]);
+    prefs.set('brushSize', Number(size.value));
+  };
+  size.oninput();
+
+  const only = $('#opt-only-unassigned');
+  only.onchange = () => {
+    onlyUnassigned = only.checked;
+    setStatus(onlyUnassigned ? 'Painting unassigned units only; drawn precincts are protected.'
+      : 'Painting over any unlocked unit.');
+  };
+  $('#btn-keys').onclick = showKeysDialog;
+  // Radios, checkboxes and the slider give focus back once used, so Space and
+  // the single-key shortcuts keep working straight after a click.
+  $('#tools').addEventListener('change', (e) => {
+    if (e.target.matches('input[type=radio],input[type=checkbox],input[type=range]')) e.target.blur();
+  });
+
   const sel = $('#shade-mode');
   sel.value = prefs.get('shade', 'district');
   sel.onchange = () => {
@@ -417,6 +510,57 @@ function wireTools() {
   lab.checked = prefs.get('labels', true);
   mapView.setLabels(lab.checked);
   lab.onchange = () => { mapView.setLabels(lab.checked); prefs.set('labels', lab.checked); };
+}
+
+function setBrushMode(mode) {
+  const r = document.querySelector(`#brush-mode input[value="${mode}"]`);
+  if (!r) return;
+  r.checked = true;
+  mapView.setBrushMode(mode);
+}
+
+function stepBrushSize(delta) {
+  const size = $('#brush-size');
+  size.value = Math.max(1, Math.min(5, Number(size.value) + delta));
+  size.oninput();
+}
+
+/** Make the precinct under the cursor the active one. */
+function eyedropper() {
+  const t = hoverTarget;
+  if (!t) return;
+  let d;
+  if (t.kind === 'vtd') d = state.asn[t.idx];
+  else { const ov = state.blockOv.get(data.idxOf.get(t.key)); d = ov ? (ov.get(t.geoid) ?? 0) : 0; }
+  setActive(d);
+  setStatus(d ? `Picked Precinct ${d}.` : 'Picked the eraser (unassigned).');
+}
+
+function showKeysDialog() {
+  const rows = [
+    ['Left-drag', 'Paint with the active precinct'],
+    ['Right-drag, or Alt+drag', 'Erase (works with brush, box and fill)'],
+    ['Shift+drag', 'Box select, whatever tool is active'],
+    ['Space+drag', 'Pan the map; the wheel zooms'],
+    ['1 2 3 4', 'Pick a precinct'],
+    ['0 or E', 'Pick the eraser'],
+    ['I', 'Pick the precinct under the cursor'],
+    ['B / M / F / H', 'Brush / box select / fill region / pan'],
+    ['[ and ]', 'Smaller / larger brush'],
+    ['U', 'Paint unassigned only, on or off'],
+    ['L', 'Lock or unlock the active precinct'],
+    ['Z or Ctrl+Z', 'Undo'],
+    ['R, Ctrl+Shift+Z or Ctrl+Y', 'Redo'],
+    ['?', 'This list'],
+  ];
+  const t = el('table', { class: 'keys' });
+  t.innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  openModal('Shortcuts', [
+    t,
+    el('p', { style: 'margin-top:12px', class: 'tight', html:
+      '<span class="cmp">Fill region gives the clicked VTD, and everything connected to it with the same '
+      + 'assignment, to the active precinct. Ctrl+R is left alone, so it still reloads the page.</span>' }),
+  ]);
 }
 
 function renderLegend() {
