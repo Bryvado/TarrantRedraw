@@ -5,9 +5,11 @@ import { loadAll, loadBlocks } from './data.js';
 import { PlanState, planLib, prefs } from './state.js';
 import { computeMetrics } from './metrics.js';
 import { buildTopology } from './topology.js';
-import { MapView, SHADE_MODES } from './mapview.js';
+import { MapView, SHADE_MODES, setPartisanPalette } from './mapview.js';
 import { Panel } from './panel.js';
-import { PRECINCT, UNASSIGNED, NODATA, gradientCSS, ramp } from './colors.js';
+import {
+  PRECINCT, UNASSIGNED, NODATA, gradientCSS, ramp, PARTISAN_PALETTES, DEFAULT_PARTISAN,
+} from './colors.js';
 import {
   vtdCSV, blockCSV, dissolvedGeoJSON, flattenToVtd,
   sniffCSV, applyVtdImport, applyBlockImport, DRA_HEADERS,
@@ -147,6 +149,7 @@ function recompute(force) {
 // no baseline vote counts to sum.
 const AGG_FIELD = { dshare: 'dshare', share26: 'share26', hisp: 'hisp', black: 'black', nonwhite: 'nonwhite' };
 let aggOn = false, aggKey = '';
+let partisanPal = PARTISAN_PALETTES[DEFAULT_PARTISAN];
 
 /**
  * "Shade by drawn precinct totals": colour each drawn precinct by its own
@@ -169,7 +172,7 @@ function applyAggShading() {
       colors.push(v == null ? NODATA : ramp(m.ramp, (v - m.lo) / (m.hi - m.lo)));
     }
   }
-  const key = `${mode}|${colors ? colors.join() + [1, 2, 3, 4].map((d) => lastMetrics.rows[d][field]).join() : ''}`;
+  const key = `${mode}|${$('#partisan-palette').value}|${colors ? colors.join() + [1, 2, 3, 4].map((d) => lastMetrics.rows[d][field]).join() : ''}`;
   if (key === aggKey) return;
   aggKey = key;
   mapView.setAggColors(colors);
@@ -524,6 +527,23 @@ function wireTools() {
     if (e.target.matches('input[type=radio],input[type=checkbox],input[type=range]')) e.target.blur();
   });
 
+  // Party colours: red / blue unless the user picked another palette.
+  const pal = $('#partisan-palette');
+  for (const [k, p] of Object.entries(PARTISAN_PALETTES)) {
+    pal.append(el('option', { value: k }, [p.label + (k === DEFAULT_PARTISAN ? '' : ' (colorblind-friendly)')]));
+  }
+  pal.value = PARTISAN_PALETTES[prefs.get('partisanPalette')] ? prefs.get('partisanPalette') : DEFAULT_PARTISAN;
+  partisanPal = setPartisanPalette(pal.value);
+  pal.onchange = () => {
+    partisanPal = setPartisanPalette(pal.value);
+    prefs.set('partisanPalette', pal.value);
+    mapView.setShadeMode($('#shade-mode').value);
+    aggKey = '';
+    renderLegend();
+    applyAggShading();
+    pal.blur();
+  };
+
   const sel = $('#shade-mode');
   sel.value = prefs.get('shade', 'district');
   sel.onchange = () => {
@@ -632,7 +652,7 @@ function renderLegend(aggColors = mapView.aggColors) {
     <div class="legend-note">
       <span class="pdot" style="background:${NODATA}"></span>
       no data (${mode.startsWith('f_') || m.prop.startsWith('f_') ? 'zero VAP' : 'zero votes'})
-      ${m.ramp === SHADE_MODES.dshare.ramp ? '<br>Teal = Democratic, brown = Republican.' : ''}
+      ${m.partisan ? `<br>${partisanPal.dem} = Democratic, ${partisanPal.rep.toLowerCase()} = Republican.` : ''}
       ${mode === 'shift26' ? '<br>Green = shift toward Democrats, purple = toward Republicans.' : ''}
     </div>`;
   if (aggColors && AGG_FIELD[mode] && lastMetrics) {

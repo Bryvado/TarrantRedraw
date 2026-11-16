@@ -1,11 +1,34 @@
-// Color ramps. Rules, firm: no red or pink ramp; never red-vs-blue for partisanship.
+// Color ramps. Partisan shading defaults to red / blue; two alternatives are
+// offered for readers who cannot separate those well or prefer not to use them.
 
 export const PRECINCT = ['#1b9e77', '#e6ab02', '#7570b3', '#666666'];
 export const UNASSIGNED = '#5a6068';
 export const NODATA = '#43474d';
 
-/** Partisan level: brown -> off-white -> teal, centered at 50%. Teal = Democratic. */
-export const PARTISAN = ['#8c510a', '#bf812d', '#dfc27d', '#f5f5f5', '#80cdc1', '#35978f', '#01665e'];
+/**
+ * Partisan level palettes, Republican end first, Democratic end last, centred
+ * at 50%. All three are ColorBrewer diverging schemes rated colorblind-safe;
+ * the alternatives are there because red against blue is still the hardest of
+ * the three to tell apart with a colour-vision deficiency.
+ */
+export const PARTISAN_PALETTES = {
+  redblue: {
+    label: 'Red / blue',
+    stops: ['#b2182b', '#ef8a62', '#fddbc7', '#f7f7f7', '#d1e5f0', '#67a9cf', '#2166ac'],
+    rep: 'Red', dem: 'Blue',
+  },
+  brownteal: {
+    label: 'Brown / teal',
+    stops: ['#8c510a', '#bf812d', '#dfc27d', '#f5f5f5', '#80cdc1', '#35978f', '#01665e'],
+    rep: 'Brown', dem: 'Teal',
+  },
+  orangepurple: {
+    label: 'Orange / purple',
+    stops: ['#b35806', '#f1a340', '#fee0b6', '#f7f7f7', '#d8daeb', '#998ec3', '#542788'],
+    rep: 'Orange', dem: 'Purple',
+  },
+};
+export const DEFAULT_PARTISAN = 'redblue';
 /** Change over time: purple -> green, centered at 0. */
 export const SHIFT = ['#762a83', '#9970ab', '#c2a5cf', '#f7f7f7', '#a6dba0', '#5aae61', '#1b7837'];
 /** Demographic shares: single-hue sequential (blue-green, distinct from the precinct hues). */
