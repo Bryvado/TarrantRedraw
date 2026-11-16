@@ -116,6 +116,7 @@ the wheel zooms. The lock next to each precinct stops it being painted over.
 | `[` and `]` | Smaller / larger brush |
 | `U` | Paint unassigned only, on or off |
 | `L` | Lock or unlock the active precinct |
+| `Ctrl+S` | Save the plan under its name |
 | `Z` or `Ctrl+Z` | Undo |
 | `R`, `Ctrl+Shift+Z` or `Ctrl+Y` | Redo |
 | `?` | Show this list in the app |
@@ -127,9 +128,9 @@ already drawn, so a new precinct can be brushed up against its neighbours withou
 them. `Ctrl+R` is deliberately left alone and still reloads the page.
 
 A first visit starts blank: every VTD unassigned, plan named "Untitled plan". **Start from…**
-loads Map 7 or any other reference plan. **Clear** unassigns every VTD and drops all block
-splits in one step, locked precincts included; there is no confirmation, and Undo restores
-the plan exactly.
+loads Map 7 or any other reference plan. **Clear** unassigns every VTD, drops all block
+splits and unlocks all four precincts in one step, so a cleared map can be painted straight
+away; there is no confirmation, and Undo restores the plan, locks included, exactly.
 
 **Shading** is one mode at a time: assigned precinct, Democratic share on the composite /
 2026 / the 2020–24 baseline, the 2026 shift, and Hispanic, Black and nonwhite share of VAP.
@@ -160,8 +161,12 @@ numbers and its Split / Merge button. It follows clicks, not the pointer, so it 
 while you reach for the button. A plain click with a paint tool paints the unit and opens
 its card; the **Select** tool (`S`) and `Ctrl`+click open it without painting.
 
-**Plans** autosave to `localStorage` continuously; **Plans…** keeps separate named copies,
-with duplicate and delete.
+**Plans** autosave to `localStorage` continuously, splits and locks included. **Save**
+(`Ctrl+S`) keeps the plan under its name in **Plans…**, overwriting the earlier save; an
+untitled plan asks for a name once. The label beside it reads *Saved* or *Unsaved changes*
+against that saved copy. **Plans…** also keeps separate named copies, with load, duplicate
+and delete. Loading replaces the plan you are drawing, so with unsaved changes it offers
+*Save, then load* first.
 
 ### Colors
 
@@ -177,9 +182,11 @@ with duplicate and delete.
 ## Block-level splitting
 
 Block editing is an option, not the default. **Split into blocks** on a VTD's unit card
-fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks individually. **Merge**
-is on the same card, whether you clicked the split VTD or any one of its blocks, and
-collapses the VTD back to the precinct holding most of its population. A plan is stored as
+fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks individually. **Undo
+split** is on the same card, whether you clicked the split VTD or any one of its blocks. It
+drops the block assignments and gives the whole VTD to the precinct holding most of its
+population, and the button names that precinct (*whole VTD goes to Pct 3*). Undo and redo
+bring the blocks back with their colours. A plan is stored as
 a VTD-level assignment plus block-level overrides.
 
 - When a VTD is split, the analytics use its blocks' numbers in place of the VTD's.
@@ -351,3 +358,15 @@ interest).
 
 No sampler, optimizer or auto-draw in the browser. No racial targets. No accounts or
 multi-user editing. No changes to the R code.
+
+## Tests
+
+`tests/plan-persistence.mjs` drives the app in headless Chromium through Playwright, with no
+web server: it saves, clears, loads and reloads a plan with a split VTD and a locked precinct;
+undoes and redoes splits and merges and checks the block geometry and colours; checks that
+Clear unlocks and that undo restores the locks; and exercises Save, `Ctrl+S` and the load
+warning.
+
+```bash
+node tests/plan-persistence.mjs
+```

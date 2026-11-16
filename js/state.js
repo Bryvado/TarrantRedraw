@@ -62,12 +62,12 @@ export class PlanState {
   }
 
   // ---- transactions -------------------------------------------------------
-  begin() { if (!this._tx) this._tx = { v: [], b: [], s: [] }; return this._tx; }
+  begin() { if (!this._tx) this._tx = { v: [], b: [], s: [], l: null }; return this._tx; }
 
   commit(label = '') {
     const tx = this._tx;
     this._tx = null;
-    if (!tx || (!tx.v.length && !tx.b.length && !tx.s.length)) return false;
+    if (!tx || (!tx.v.length && !tx.b.length && !tx.s.length && !tx.l)) return false;
     tx.label = label;
     this.undoStack.push(tx);
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
@@ -150,7 +150,7 @@ export class PlanState {
   }
 
   /** Replace the whole assignment (reference plan, import, load). */
-  setAll(arr, { name, clearHistory = true, label = 'load' } = {}) {
+  setAll(arr, { name, clearHistory = true, label = 'load', autosave = true } = {}) {
     const tx = this.begin();
     for (const [i, ov] of this.blockOv) tx.s.push([i, ov, null]);
     this.blockOv.clear();
@@ -165,19 +165,26 @@ export class PlanState {
       this.undoStack.length = 0;
       this.redoStack.length = 0;
       this.emit({ kind: 'reset' });
-      this.autosave();
+      if (autosave) this.autosave();
       return true;
     }
     return this.commit(label);
   }
 
+  /** Unassign everything, drop every split and unlock all four precincts: one undoable step. */
   clearAll() {
+    if (this.locks.some(Boolean)) {
+      const tx = this.begin();
+      tx.l = [this.locks.slice(), [false, false, false, false]];
+      this.locks = [false, false, false, false];
+    }
     return this.setAll(new Int8Array(this.n), { clearHistory: false, label: 'clear' });
   }
 
   // ---- undo / redo --------------------------------------------------------
   _applyInverse(tx, forward) {
-    const touched = { vtds: [], blocks: [], splits: [] };
+    const touched = { vtds: [], blocks: [], splits: [], locks: false };
+    if (tx.l) { this.locks = (forward ? tx.l[1] : tx.l[0]).slice(); touched.locks = true; }
     const vlist = forward ? tx.v : [...tx.v].reverse();
     const blist = forward ? tx.b : [...tx.b].reverse();
     const slist = forward ? tx.s : [...tx.s].reverse();
@@ -239,6 +246,11 @@ export class PlanState {
     };
   }
 
+  /**
+   * Replace the plan with a serialised one. It does not autosave: the caller
+   * does that once the load is complete (block geometry fetched, splits that
+   * failed to load dropped), so localStorage never holds a half-loaded plan.
+   */
   fromJSON(obj, { clearHistory = true } = {}) {
     if (!obj || typeof obj.asn !== 'string') return false;
     const arr = new Int8Array(this.n);
@@ -248,7 +260,7 @@ export class PlanState {
       arr[i] = d >= 0 && d <= 4 ? d : 0;
     }
     this._quiet++;
-    this.setAll(arr, { name: obj.name ?? this.name, clearHistory: true });
+    this.setAll(arr, { name: obj.name ?? this.name, clearHistory: true, autosave: false });
     this._quiet--;
     this.locks = Array.isArray(obj.locks) ? obj.locks.map(Boolean).slice(0, 4) : [false, false, false, false];
     while (this.locks.length < 4) this.locks.push(false);
@@ -263,6 +275,19 @@ export class PlanState {
     if (clearHistory) { this.undoStack.length = 0; this.redoStack.length = 0; }
     this.emit({ kind: 'reset' });
     return true;
+  }
+
+  /** The plan's content, without the timestamp: equal strings mean equal plans. */
+  signature(json = this.toJSON()) {
+    const { saved, v, ...rest } = json;
+    const ov = rest.blockOv || {};
+    const sortedOv = {};
+    for (const k of Object.keys(ov).sort()) {
+      const o = ov[k], so = {};
+      for (const g of Object.keys(o).sort()) so[g] = o[g];
+      sortedOv[k] = so;
+    }
+    return JSON.stringify([rest.name, rest.asn, (rest.locks || []).map(Boolean), sortedOv]);
   }
 
   // ---- localStorage -------------------------------------------------------
@@ -281,9 +306,9 @@ export class PlanState {
         localStorage.removeItem(LS_CUR);
         return false;
       }
-      const ok = this.fromJSON(obj);
-      if (ok) this.autosave();          // rewrite at the current version
-      return ok;
+      // The caller autosaves once the splits are rehydrated, which also
+      // rewrites the plan at the current version.
+      return this.fromJSON(obj);
     } catch (e) { return false; }
   }
 

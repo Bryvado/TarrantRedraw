@@ -76,6 +76,7 @@ async function boot() {
   // Restore the autosaved plan; with none, the plan starts blank.
   state.restore();
   await rehydrateSplits();
+  state.autosave();
 
   state.on(onStateChange);
   buildPrecinctList();
@@ -84,6 +85,7 @@ async function boot() {
   mapView.refreshOutlines();
   recompute(true);
   updateUndoButtons();
+  updateSaveState();
 
   // Handle for the browser-side check suite and for debugging from the console.
   window.TarrantRedraw = {
@@ -94,7 +96,8 @@ async function boot() {
     recompute, computeMetrics, vtdCSV, blockCSV, dissolvedGeoJSON,
     sniffCSV, applyVtdImport, applyBlockImport, flattenToVtd,
     setActive: (d) => setActive(d),
-    doSplit, doUnsplit,
+    doSplit, doUnsplit, loadSavedPlan, saveCurrentPlan,
+    get blockFeatureCount() { return mapView.blockFeatures.size; },
     select: (idx) => selectVtd(idx), get selected() { return selected; },
   };
 
@@ -109,6 +112,7 @@ async function rehydrateSplits() {
   if (!idxs.length) return;
   setStatus(`Loading blocks for ${idxs.length} split VTD${idxs.length > 1 ? 's' : ''}…`);
   for (const idx of idxs) {
+    if (mapView.blockFeatures.has(idx)) continue;
     try {
       const gj = await loadBlocks(data.keys[idx]);
       mapView.addBlockFeatures(idx, gj.features);
@@ -200,6 +204,8 @@ function onStateChange(detail) {
     recompute(false);
   } else if (detail.kind === 'edit' && WHOLE_PLAN_EDITS.has(detail.tx.label)) {
     // Clear, Start from… and Import replace the whole assignment in one step.
+    // Clear also unlocks every precinct.
+    buildPrecinctList();
     mapView.syncAllStates();
     mapView.pushBlockSource();
     mapView.refreshOutlines();
@@ -207,16 +213,52 @@ function onStateChange(detail) {
   } else if (detail.kind === 'undo' || detail.kind === 'redo') {
     const t = detail.touched;
     for (const i of t.vtds) mapView.setVtdState(i, state.asn[i]);
-    for (const i of t.splits) mapView.setVtdState(i, state.asn[i]);
-    if (t.splits.length) mapView.pushBlockSource();
     for (const [i, g] of t.blocks) {
       const ov = state.blockOv.get(i);
       if (ov) mapView.map.setFeatureState({ source: 'blocks', id: g }, { d: ov.get(g) });
     }
-    mapView.refreshOutlines();
-    recompute(false);
+    if (t.locks) buildPrecinctList();
+    if (t.splits.length) {
+      // A split or merge undone or redone changes which VTDs are drawn as
+      // blocks, so the block geometry has to follow, not just the state.
+      syncSplitGeometry(t.splits);
+    } else {
+      mapView.refreshOutlines();
+      recompute(false);
+    }
   }
   updateUndoButtons();
+  updateSaveState();
+}
+
+/**
+ * Bring the block layer in line with `state.blockOv` for the given VTDs:
+ * fetch and add the blocks of each one that is now split (the fetch is
+ * cached), drop the blocks of each one that no longer is, then repaint.
+ */
+let splitSyncSeq = 0;
+async function syncSplitGeometry(indices) {
+  const seq = ++splitSyncSeq;
+  const want = [...new Set(indices)];
+  for (const i of want) {
+    if (state.isSplit(i) && !mapView.blockFeatures.has(i)) {
+      try {
+        const gj = await loadBlocks(data.keys[i]);
+        // A later undo may have merged it again while the blocks loaded.
+        if (state.isSplit(i)) mapView.blockFeatures.set(i, gj.features);
+      } catch (e) {
+        setStatus(`Could not load blocks for VTD ${data.keys[i]}.`, 'warn');
+      }
+    }
+  }
+  if (seq !== splitSyncSeq) return;          // a newer undo/redo will finish the job
+  for (const i of want) {
+    if (!state.isSplit(i)) mapView.blockFeatures.delete(i);
+    mapView.setVtdState(i, state.asn[i]);
+  }
+  mapView.pushBlockSource();                 // re-sends the geometry and every block's colour
+  mapView.refreshOutlines();
+  recompute(false);
 }
 
 // --------------------------------------------------------------- picking ----
@@ -332,6 +374,16 @@ function selectVtd(idx) {
   renderUnitInfo();
 }
 
+/** "Undo split", naming the precinct the whole VTD will take: its majority by population. */
+function undoSplitButton(idx) {
+  const d = state.majorityOf(idx, mapView.blockPopMap(idx));
+  return el('button', {
+    text: `Undo split (whole VTD goes to ${d ? `Pct ${d}` : 'unassigned'})`,
+    title: 'Drops the block assignments; the VTD takes the precinct holding most of its population.',
+    onclick: () => doUnsplit(idx),
+  });
+}
+
 function clearSelection() { selected = null; renderUnitInfo(); }
 
 function renderUnitInfo() {
@@ -374,7 +426,7 @@ function renderUnitInfo() {
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
     if (split) {
       box.append(el('div', { class: 'uc-note', text: `Split into ${state.blockOv.get(i).size} blocks. Paint them one by one.` }));
-      box.append(el('button', { text: 'Merge blocks back into one VTD', onclick: () => doUnsplit(i) }));
+      box.append(undoSplitButton(i));
     } else {
       box.append(el('button', { text: 'Split into blocks', onclick: () => doSplit(i) }));
     }
@@ -390,7 +442,7 @@ function renderUnitInfo() {
     add('D composite / 2026 *', `${p.dshare == null ? '—' : fmtPct(p.dshare)} / ${p.share26 == null ? '—' : fmtPct(p.share26)}`);
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
     box.insertAdjacentHTML('beforeend', '<div class="uc-note">* estimated from the VTD’s votes</div>');
-    box.append(el('button', { text: `Merge VTD ${t.key} back into one unit`, onclick: () => doUnsplit(idx) }));
+    box.append(undoSplitButton(idx));
     box.append(el('button', { class: 'linkbtn', text: 'Show the whole VTD', onclick: () => selectVtd(idx) }));
   }
 }
@@ -435,6 +487,7 @@ function toggleLock(d) {
   state.locks[d - 1] = !state.locks[d - 1];
   state.autosave();
   buildPrecinctList();
+  updateSaveState();
   setStatus(`Precinct ${d} ${state.locks[d - 1] ? 'locked' : 'unlocked'}.`);
 }
 
@@ -474,14 +527,16 @@ function wireToolbar() {
   $('#btn-undo').onclick = () => state.undo();
   $('#btn-redo').onclick = () => state.redo();
   $('#btn-clear').onclick = () => {
-    if (state.clearAll()) setStatus('Cleared every assignment. Undo restores it.');
+    if (state.clearAll()) setStatus('Cleared every assignment and unlocked all precincts. Undo restores it.');
     else setStatus('Nothing to clear.');
   };
   $('#plan-name').onchange = (e) => {
     state.name = e.target.value.trim() || 'Untitled plan';
     e.target.value = state.name;
     state.autosave();
+    updateSaveState();
   };
+  $('#btn-save').onclick = () => saveCurrentPlan();
   $('#btn-plans').onclick = showPlansDialog;
   $('#btn-start').onclick = showStartDialog;
   $('#btn-export-block').onclick = () => exportBlocks();
@@ -503,6 +558,16 @@ function wireToolbar() {
   };
 
   window.addEventListener('keydown', (e) => {
+    // Ctrl/⌘+S saves from anywhere, the plan-name field included, and never
+    // opens the browser's own save dialog.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if ($('#modal-back').hidden) {
+        if (document.activeElement === $('#plan-name')) $('#plan-name').blur();
+        saveCurrentPlan();
+      }
+      return;
+    }
     if (isTyping()) return;
     if (!$('#modal-back').hidden) { if (e.key === 'Escape') closeModal(); return; }
     const mod = e.ctrlKey || e.metaKey;
@@ -741,7 +806,8 @@ function showKeysDialog() {
     ['1 2 3 4', 'Pick a precinct'],
     ['0 or E', 'Pick the eraser'],
     ['I', 'Pick the precinct under the cursor'],
-    ['Click', 'Show that unit’s numbers, with Split / Merge, in the card on the map'],
+    ['Click', 'Show that unit’s numbers, with Split / Undo split, in the card on the map'],
+    ['Ctrl+S', 'Save the plan under its name'],
     ['Ctrl+click, or the Select tool', 'The same, without painting'],
     ['B / M / F / S / H', 'Brush / box / fill region / select / pan'],
     ['A', 'Show or hide the analytics under the map'],
@@ -795,7 +861,7 @@ async function doSplit(idx) {
     // Frame the VTD so its blocks are workable.
     const b = bboxOf(data.vtdGeo.features.find((f) => f.properties.vtdkey === key));
     if (b) mapView.map.fitBounds(b, { padding: 80, duration: 400, maxZoom: 15 });
-    setStatus(`VTD ${key} split into ${gj.features.length} blocks. Paint them one at a time; Merge undoes the split.`, 'ok');
+    setStatus(`VTD ${key} split into ${gj.features.length} blocks. Paint them one at a time; Undo split puts it back.`, 'ok');
     selectVtd(idx);
   } catch (e) {
     setStatus(`Could not load blocks for VTD ${key}: ${e.message}`, 'warn');
@@ -830,6 +896,7 @@ function bboxOf(feature) {
 // --------------------------------------------------------------- dialogs ----
 function openModal(title, bodyNodes, footNodes) {
   const back = $('#modal-back'), box = $('#modal');
+  if (modalCloseHook) { const fn = modalCloseHook; modalCloseHook = null; fn(); }
   box.innerHTML = '';
   box.append(el('div', { class: 'm-head' }, [
     el('h2', { html: title }),
@@ -840,7 +907,13 @@ function openModal(title, bodyNodes, footNodes) {
   back.hidden = false;
   back.onclick = (e) => { if (e.target === back) closeModal(); };
 }
-function closeModal() { $('#modal-back').hidden = true; }
+let modalCloseHook = null;
+function onModalClose(fn) { modalCloseHook = fn; }
+function closeModal() {
+  $('#modal-back').hidden = true;
+  const fn = modalCloseHook; modalCloseHook = null;
+  if (fn) fn();
+}
 
 // ---- start from ----
 function showStartDialog() {
@@ -848,7 +921,7 @@ function showStartDialog() {
     el('button', {
       style: 'width:100%;text-align:left;margin-bottom:6px',
       text: 'Blank — every VTD unassigned',
-      onclick: () => { state.clearAll(); state.name = 'Untitled plan'; $('#plan-name').value = state.name; closeModal(); setStatus('Started from blank.'); },
+      onclick: () => { state.clearAll(); state.name = UNTITLED; $('#plan-name').value = state.name; state.autosave(); updateSaveState(); closeModal(); setStatus('Started from blank.'); },
     }),
   ];
   for (const col of Object.keys(data.planCols)) {
@@ -871,6 +944,113 @@ function showStartDialog() {
   ]);
 }
 
+// ---- save / load ----
+const UNTITLED = 'Untitled plan';
+
+/** Unsaved: the plan differs from the saved copy under its name, or has none. */
+function hasUnsavedChanges() {
+  const saved = planLib.get(state.name);
+  if (saved) return state.signature(saved) !== state.signature();
+  // An untitled, empty, unlocked plan has nothing worth keeping.
+  return state.asn.some((d) => d !== 0) || state.splitCount > 0 || state.locks.some(Boolean)
+    || state.name !== UNTITLED;
+}
+
+function updateSaveState() {
+  const n = $('#save-state');
+  if (!n || !state) return;
+  const dirty = hasUnsavedChanges();
+  const saved = !!planLib.get(state.name);
+  n.textContent = dirty ? 'Unsaved changes' : saved ? 'Saved' : '';
+  n.className = 'save-state' + (dirty ? ' dirty' : '');
+  n.title = dirty
+    ? (saved ? `Differs from the saved plan “${state.name}”. Ctrl+S saves.` : 'Not saved under a name yet. Ctrl+S saves.')
+    : '';
+}
+
+/**
+ * Save under the plan's name, overwriting that saved plan. An untitled plan
+ * asks for a name first. Resolves true once saved.
+ */
+function saveCurrentPlan() {
+  return new Promise((resolve) => {
+    const write = (name) => {
+      state.name = name;
+      $('#plan-name').value = name;
+      state.autosave();
+      const ok = planLib.save(name, state.toJSON());
+      updateSaveState();
+      if (ok) setStatus(`Saved “${name}”.`, 'ok');
+      else setStatus('Could not save: local storage is full or unavailable.', 'warn');
+      return ok;
+    };
+    if (state.name && state.name !== UNTITLED) { resolve(write(state.name)); return; }
+
+    const input = el('input', { type: 'text', value: '', spellcheck: 'false', placeholder: 'Plan name' });
+    const err = el('p', { class: 'err tight' });
+    let done = false;
+    const go = () => {
+      const n = input.value.trim();
+      if (!n || n === UNTITLED) { err.textContent = 'Give the plan a name.'; input.focus(); return; }
+      if (planLib.get(n) && !confirm(`Overwrite the saved plan “${n}”?`)) return;
+      done = true;
+      closeModal();
+      resolve(write(n));
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    openModal('Save plan', [
+      el('label', { class: 'fld' }, ['Name this plan', input]),
+      err,
+    ], [
+      el('button', { text: 'Cancel', onclick: () => { closeModal(); } }),
+      el('button', { class: 'primary', text: 'Save', onclick: go }),
+    ]);
+    onModalClose(() => { if (!done) resolve(false); });
+    input.focus();
+  });
+}
+
+/** Loading replaces the plan you are drawing: offer to save it first. */
+function confirmLoad(name) {
+  if (!hasUnsavedChanges()) {
+    loadSavedPlan(name);
+    return;
+  }
+  const cur = state.name || UNTITLED;
+  openModal(`Load “${escapeHTML(name)}”?`, [
+    el('p', { html: `Loading replaces the plan you are drawing, <strong>${escapeHTML(cur)}</strong>, `
+      + 'which has unsaved changes. Undo cannot bring it back after a load.' }),
+  ], [
+    el('button', { text: 'Cancel', onclick: closeModal }),
+    el('button', { text: 'Discard and load', onclick: () => { closeModal(); loadSavedPlan(name); } }),
+    el('button', { class: 'primary', text: 'Save, then load', onclick: async () => {
+      closeModal();
+      if (await saveCurrentPlan()) loadSavedPlan(name);
+    } }),
+  ]);
+}
+
+/** The one path that loads a saved plan: state, block geometry, map, then one autosave. */
+async function loadSavedPlan(name) {
+  const p = planLib.get(name);
+  if (!p) { setStatus(`No saved plan “${name}”.`, 'warn'); return false; }
+  closeModal();
+  selected = null;
+  state.fromJSON(p);
+  await rehydrateSplits();
+  state.autosave();
+  mapView.syncAllStates(); mapView.pushBlockSource(); mapView.refreshOutlines();
+  buildPrecinctList();
+  recompute(false);
+  updateUndoButtons();
+  updateSaveState();
+  setStatus(`Loaded “${name}”.`, 'ok');
+  return true;
+}
+
+const escapeHTML = (s) => String(s).replace(/[&<>"]/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 // ---- named plans ----
 function showPlansDialog() {
   const list = el('div');
@@ -890,13 +1070,7 @@ function showPlansDialog() {
         el('span', { class: 'mr-meta', text:
           `${assigned}/${data.n} assigned${p.blockOv && Object.keys(p.blockOv).length
             ? ` · ${Object.keys(p.blockOv).length} split` : ''}` }),
-        el('button', { text: 'Load', onclick: async () => {
-          state.fromJSON(p);
-          await rehydrateSplits();
-          mapView.syncAllStates(); mapView.pushBlockSource(); mapView.refreshOutlines();
-          recompute(false);
-          closeModal(); setStatus(`Loaded “${name}”.`, 'ok');
-        } }),
+        el('button', { text: 'Load', onclick: () => confirmLoad(name) }),
         el('button', { text: 'Duplicate', onclick: () => {
           const nn = planLib.uniqueName(name);
           planLib.save(nn, { ...p, name: nn });
@@ -923,8 +1097,10 @@ function showPlansDialog() {
       if (existing && !confirm(`Overwrite the saved plan “${n}”?`)) return;
       state.name = n;
       $('#plan-name').value = n;
+      state.autosave();
       if (planLib.save(n, state.toJSON())) { refresh(); setStatus(`Saved “${n}”.`, 'ok'); }
       else setStatus('Could not save: local storage is full or unavailable.', 'warn');
+      updateSaveState();
     } }),
     el('h3', { style: 'margin:16px 0 4px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3)', text: 'Saved' }),
     list,
