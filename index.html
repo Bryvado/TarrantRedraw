@@ -22,11 +22,15 @@
   <label class="tb-field">Plan
     <input id="plan-name" type="text" spellcheck="false" autocomplete="off">
   </label>
+  <div class="tb-group">
+    <button id="btn-save" title="Save under the plan’s name, overwriting that saved plan (Ctrl+S)">Save</button>
+  </div>
+  <span id="save-state" class="save-state" aria-live="polite"></span>
 
   <div class="tb-group">
     <button id="btn-undo" title="Undo (Z or Ctrl+Z)">Undo</button>
     <button id="btn-redo" title="Redo (R or Ctrl+Shift+Z)">Redo</button>
-    <button id="btn-clear" title="Unassign every VTD and drop all block splits. Undo restores it.">Clear</button>
+    <button id="btn-clear" title="Unassign every VTD, drop all block splits and unlock every precinct. Undo restores it.">Clear</button>
   </div>
 
   <div class="tb-group">

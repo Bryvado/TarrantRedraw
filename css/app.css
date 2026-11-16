@@ -303,3 +303,8 @@ body.resizing #map{pointer-events:none}
 /* Attribution stays folded behind its (i) button until asked for. */
 #map-wrap .maplibregl-ctrl-attrib.maplibregl-compact-show{max-width:min(460px,60vw)}
 #map-wrap .maplibregl-ctrl-attrib-inner{font-size:10px;line-height:1.35}
+
+/* ---------- save state ---------- */
+.save-state{font-size:11.5px;color:var(--fg3);white-space:nowrap;min-width:96px;margin-left:-6px}
+.save-state.dirty{color:#e6ab02}
+.save-state:not(.dirty):not(:empty)::before{content:'✓ ';color:var(--p1)}
