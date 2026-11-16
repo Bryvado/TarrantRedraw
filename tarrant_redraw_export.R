@@ -20,7 +20,7 @@ REPO_URL  <- "https://github.com/Bryvado/TarrantRedraw.git"
 REPO      <- file.path(Sys.getenv("USERPROFILE"), "TarrantRedraw")   # local disk: libgit2 can't open repos on the network share
 OUT       <- file.path(REPO, "data")
 GIT_NAME  <- "Bryvado"
-GIT_EMAIL <- "166976989+Bryvado@users.noreply.github.com"              # your no-reply address from GitHub Settings > Emails
+GIT_EMAIL <- "166976989+Bryvado@users.noreply.github.com"
 
 # ---- 0. Build the pipeline objects (main script, top through the R-pack plan) ----
 NEED_OBJ <- c("tar_sf", "cc_pack", "map7_sf", "cities", "comms", "DIR")
