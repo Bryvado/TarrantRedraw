@@ -7,7 +7,7 @@ import { computeMetrics } from './metrics.js';
 import { buildTopology } from './topology.js';
 import { MapView, SHADE_MODES } from './mapview.js';
 import { Panel } from './panel.js';
-import { PRECINCT, UNASSIGNED, NODATA, gradientCSS } from './colors.js';
+import { PRECINCT, UNASSIGNED, NODATA, gradientCSS, ramp } from './colors.js';
 import {
   vtdCSV, blockCSV, dissolvedGeoJSON, flattenToVtd,
   sniffCSV, applyVtdImport, applyBlockImport, DRA_HEADERS,
@@ -139,6 +139,41 @@ function recompute(force) {
   panel.render(lastMetrics, refMetrics);
   updatePrecinctPops(lastMetrics);
   updateMapNote(lastMetrics);
+  applyAggShading();
+}
+
+// Shading modes that can be totalled for a drawn precinct, and the metrics
+// field that holds the total. The baseline and the shift cannot: the data has
+// no baseline vote counts to sum.
+const AGG_FIELD = { dshare: 'dshare', share26: 'share26', hisp: 'hisp', black: 'black', nonwhite: 'nonwhite' };
+let aggOn = false, aggKey = '';
+
+/**
+ * "Shade by drawn precinct totals": colour each drawn precinct by its own
+ * running total on the current measure, so the colour moves as units are added.
+ */
+function applyAggShading() {
+  const mode = $('#shade-mode').value;
+  const field = AGG_FIELD[mode];
+  const box = $('#opt-agg');
+  box.disabled = mode !== 'district' && !field;
+  box.closest('label').title = box.disabled
+    ? 'Not available for this measure: the data has no baseline vote counts to total by precinct.' : '';
+  const active = aggOn && !!field && !!lastMetrics;
+  let colors = null;
+  if (active) {
+    const m = SHADE_MODES[mode];
+    colors = [null];
+    for (let d = 1; d <= 4; d++) {
+      const v = lastMetrics.rows[d][field];
+      colors.push(v == null ? NODATA : ramp(m.ramp, (v - m.lo) / (m.hi - m.lo)));
+    }
+  }
+  const key = `${mode}|${colors ? colors.join() + [1, 2, 3, 4].map((d) => lastMetrics.rows[d][field]).join() : ''}`;
+  if (key === aggKey) return;
+  aggKey = key;
+  mapView.setAggColors(colors);
+  renderLegend(colors);
 }
 
 const WHOLE_PLAN_EDITS = new Set(['clear', 'start', 'import']);
@@ -432,6 +467,7 @@ function wireToolbar() {
       else if (k === 'u') { const c = $('#opt-only-unassigned'); c.checked = !c.checked; c.onchange(); }
       else if (k === 'l') { if (activePrecinct) toggleLock(activePrecinct); }
       else if (k === 'i') eyedropper();
+      else if (k === 't') { const c = $('#opt-agg'); if (!c.disabled) { c.checked = !c.checked; c.onchange(); } }
       else if (k === '?' || k === '/') showKeysDialog();
     }
   });
@@ -494,8 +530,20 @@ function wireTools() {
     mapView.setShadeMode(sel.value);
     prefs.set('shade', sel.value);
     renderLegend();
+    applyAggShading();
   };
   mapView.setShadeMode(sel.value);
+
+  const agg = $('#opt-agg');
+  agg.checked = aggOn = prefs.get('aggShade', false);
+  agg.onchange = () => {
+    aggOn = agg.checked;
+    prefs.set('aggShade', aggOn);
+    applyAggShading();
+    if (aggOn && $('#shade-mode').value === 'district') {
+      setStatus('Pick a partisan or demographic shading to see precinct totals.');
+    }
+  };
 
   $('#opt-opacity').onchange = (e) => mapView.setDimUnder(e.target.checked);
 
@@ -549,6 +597,7 @@ function showKeysDialog() {
     ['[ and ]', 'Smaller / larger brush'],
     ['U', 'Paint unassigned only, on or off'],
     ['L', 'Lock or unlock the active precinct'],
+    ['T', 'Shade by drawn precinct totals, on or off'],
     ['Z or Ctrl+Z', 'Undo'],
     ['R, Ctrl+Shift+Z or Ctrl+Y', 'Redo'],
     ['?', 'This list'],
@@ -563,7 +612,7 @@ function showKeysDialog() {
   ]);
 }
 
-function renderLegend() {
+function renderLegend(aggColors = mapView.aggColors) {
   const mode = $('#shade-mode').value;
   const m = SHADE_MODES[mode];
   const host = $('#legend');
@@ -586,6 +635,13 @@ function renderLegend() {
       ${m.ramp === SHADE_MODES.dshare.ramp ? '<br>Teal = Democratic, brown = Republican.' : ''}
       ${mode === 'shift26' ? '<br>Green = shift toward Democrats, purple = toward Republicans.' : ''}
     </div>`;
+  if (aggColors && AGG_FIELD[mode] && lastMetrics) {
+    host.insertAdjacentHTML('beforeend', `<div class="agg-legend">
+      <div class="legend-note">Each drawn precinct is filled with its own total. It updates as you paint.</div>
+      ${[1, 2, 3, 4].map((d) => `<span><span class="pdot" style="background:${aggColors[d]}"></span>Pct ${d}
+        <b>${fmtPct(lastMetrics.rows[d][AGG_FIELD[mode]])}</b></span>`).join('')}
+    </div>`);
+  }
 }
 
 // ------------------------------------------------------- block splitting ----
