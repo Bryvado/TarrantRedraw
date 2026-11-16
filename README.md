@@ -161,6 +161,25 @@ numbers and its Split / Merge button. It follows clicks, not the pointer, so it 
 while you reach for the button. A plain click with a paint tool paints the unit and opens
 its card; the **Select** tool (`S`) and `Ctrl`+click open it without painting.
 
+**Find problems** (under Tool) lists every precinct's connected pieces. The piece with the
+most population is the main body; every other piece is a **fragment**. Unassigned pieces are
+listed as **islands**. Each row gives the units, the population and a **Zoom** button that
+frames and highlights the piece; the badge on the button counts fragments plus islands and
+updates as you paint. Pieces come from VTD adjacency in `vtd_adj.json`. Inside split VTDs
+they come from block adjacency built from the block geometry by shared segments. The block
+layer does not share vertices with the VTD layer, so a block's neighbours across its VTD's
+edge are found in the neighbouring VTDs' block files. That adjacency is checked before use:
+every recorded VTD neighbour must be found, with the shared block border within 3% of the
+recorded length (all 782 VTDs pass; the match is within 0.4%). A VTD that failed would be
+counted whole at its majority precinct and not offered for cleanup.
+
+**Clean up fragments** proposes, for each fragment and island, the neighbouring precinct it
+shares the longest border with. Pieces under a population threshold (default 1% of the
+ideal) are ticked; larger ones are not, because moving them changes the plan materially.
+The population change per precinct, with the deviation after, is shown before you apply.
+**Apply** reassigns the ticked pieces in one undoable step. A piece is skipped, with the
+reason shown, when its own precinct or the proposed one is locked.
+
 **Plans** autosave to `localStorage` continuously, splits and locks included. **Save**
 (`Ctrl+S`) keeps the plan under its name in **Plans…**, overwriting the earlier save; an
 untitled plan asks for a name once. The label beside it reads *Saved* or *Unsaved changes*
@@ -203,8 +222,8 @@ blocks by voting-age population. The UI says so everywhere they appear.
 
 | Export | Format |
 |---|---|
-| VTD assignment CSV | Header `vtdkey,district`, 782 rows, integers. Plain enough to read straight into R as a reference plan. No comment lines. |
-| Block assignment CSV | Header `GEOID20,District`, 31,925 rows, 15-digit GEOID. One click from the toolbar. |
+| VTD assignment CSV | Header `vtdkey,district`, one row per **assigned** VTD, district 1–4. Unassigned VTDs are left out, so in R `df$district[match(map$vtdkey, df$vtdkey)]` gives `NA` for them. No comment lines. |
+| Block assignment CSV | Always header `GEOID20,District`, then one row per **assigned** block: the 15-digit GEOID as a string and the precinct 1–4. No options. 31,925 rows when every block is assigned. One click from the toolbar. |
 | Dissolved precinct GeoJSON | Precinct polygons with population, VAP shares, partisan shares, contiguity and Polsby-Popper as properties. EPSG:4326. |
 
 Both CSV formats import back in. The format is detected from the identifier: a 15-digit id
@@ -233,18 +252,21 @@ confirmed from the vendor.** What was found:
   accepted as well as a comma.
 
 So the export writes `GEOID20,District` with a header, comma separated, with the 15-digit
-GEOID unchanged — and the export dialog offers `GEOID,District` and `BLOCKID,DISTRICT` as
-alternatives in case DRA wants something else.
+GEOID unchanged. There is one format and no options.
 
-**What is still unverified, and what to do about it:** whether DRA requires every block in
-the state rather than one county, and what value it reads as unassigned. The export covers
-all 31,925 Tarrant blocks, so completeness-within-the-county is not in question, and
-unassigned blocks are written as `0` by default (switchable to blank in the dialog).
+**Unassigned blocks are left out of the file**, never written as `0` or blank. DRA builds
+its districts from the labels it finds in the file, so a `0` became a fifth, ghost
+district on import. A block missing from the file is simply unassigned in DRA. When any
+blocks are unassigned the export still runs, and the dialog says how many, with a **Find**
+link to the Find problems tool.
+
+**What is still unverified:** whether DRA requires every block in the state rather than one
+county. A fully drawn plan covers all 31,925 Tarrant blocks.
 
 The reliable way to settle it: draw any map in DRA, export it, and look at the header of
 the file it produces. Its own export is the best template for a re-import. If it differs
-from `GEOID20,District`, say so and the default takes one line to change in
-`js/io.js` (`DRA_HEADERS`).
+from `GEOID20,District`, say so and the header takes one line to change in
+`js/io.js` (`DRA_HEADER`).
 
 ---
 
@@ -367,6 +389,15 @@ undoes and redoes splits and merges and checks the block geometry and colours; c
 Clear unlocks and that undo restores the locks; and exercises Save, `Ctrl+S` and the load
 warning.
 
+`tests/fragments-export.mjs` checks the export rules (Map 7 gives 31,925 rows plus the
+header, values only 1–4; with part of the map cleared there is no `0` anywhere and the row
+count equals the assigned blocks) and the Find problems tool: a VTD deep inside Pct 3
+painted to Pct 1 shows as one fragment, Clean up proposes Pct 3 and restores Map 7 exactly,
+and Undo puts it back. It also covers islands, locks and a one-block fragment in a split VTD.
+
 ```bash
 node tests/plan-persistence.mjs
+node tests/fragments-export.mjs
 ```
+
+Set `SHOTS=<dir>` on the second to save screenshots of the tool.
