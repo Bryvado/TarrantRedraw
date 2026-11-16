@@ -238,3 +238,8 @@ table.keys td:first-child{white-space:nowrap;padding-right:16px;color:var(--fg)}
   #tools{flex-basis:200px}
   #panel{flex-basis:340px}
 }
+
+.agg-legend{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;margin-top:6px;font-size:11px;color:var(--fg2)}
+.agg-legend .legend-note{grid-column:1/-1;margin:0 0 2px}
+.agg-legend b{color:var(--fg);font:11px var(--mono);margin-left:3px}
+.chk:has(input:disabled){opacity:.45;cursor:default}

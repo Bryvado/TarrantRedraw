@@ -206,7 +206,14 @@ export class MapView {
   setShadeMode(mode) {
     this.shadeMode = mode;
     if (!this.ready) return;
-    this.map.setPaintProperty('vtd-fill', 'fill-color', fillColorExpr(mode));
+    // With precinct totals on, every unit takes its drawn precinct's colour,
+    // looked up through feature-state so a paint needs no data re-send.
+    const agg = mode !== 'district' && this.aggColors
+      ? ['match', ['to-string', ['feature-state', 'd']],
+        '1', this.aggColors[1], '2', this.aggColors[2], '3', this.aggColors[3], '4', this.aggColors[4],
+        UNASSIGNED]
+      : null;
+    this.map.setPaintProperty('vtd-fill', 'fill-color', agg || fillColorExpr(mode));
     const base = mode === 'district' ? 0.72 : (this.dimUnder ? 0.45 : 0.8);
     this.map.setPaintProperty('vtd-fill', 'fill-opacity',
       ['case', ['==', ['feature-state', 'split'], 1], 0, base]);
@@ -215,8 +222,11 @@ export class MapView {
     const blockExpr = (mode === 'district' || !bm.prop || bm.prop === 'dshare_pre' || bm.prop === 'shift26')
       ? districtColorExpr()
       : ['case', ['has', bm.prop], interpolateExpr(['get', bm.prop], bm.ramp, bm.lo, bm.hi), NODATA];
-    this.map.setPaintProperty('blocks-fill', 'fill-color', blockExpr);
+    this.map.setPaintProperty('blocks-fill', 'fill-color', agg || blockExpr);
   }
+
+  /** Colours for precincts 1..4 (index 0 unused), or null for per-unit shading. */
+  setAggColors(colors) { this.aggColors = colors; this.setShadeMode(this.shadeMode); }
 
   setDimUnder(on) { this.dimUnder = on; this.setShadeMode(this.shadeMode); }
 
