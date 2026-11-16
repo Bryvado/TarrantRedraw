@@ -103,6 +103,11 @@ paints. `Shift`+drag is a box select, `Alt`+click erases, and `Space` or a right
 The lock next to each precinct stops it being painted over. Undo and redo are `Ctrl+Z` /
 `Ctrl+Shift+Z`.
 
+A first visit starts blank: every VTD unassigned, plan named "Untitled plan". **Start from…**
+loads Map 7 or any other reference plan. **Clear** unassigns every VTD and drops all block
+splits in one step, locked precincts included; there is no confirmation, and Undo restores
+the plan exactly.
+
 **Shading** is one mode at a time: assigned precinct, Democratic share on the composite /
 2026 / the 2020–24 baseline, the 2026 shift, and Hispanic, Black and nonwhite share of VAP.
 Drawn precinct outlines stay on top in every mode. Map 7, cities and communities are
