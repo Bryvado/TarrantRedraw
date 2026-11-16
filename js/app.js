@@ -8,7 +8,7 @@ import { buildTopology } from './topology.js';
 import { MapView, SHADE_MODES, setPartisanPalette } from './mapview.js';
 import { Panel } from './panel.js';
 import {
-  PRECINCT, UNASSIGNED, NODATA, gradientCSS, ramp, PARTISAN_PALETTES, DEFAULT_PARTISAN,
+  PRECINCT, NODATA, gradientCSS, ramp, PARTISAN_PALETTES, DEFAULT_PARTISAN,
 } from './colors.js';
 import {
   vtdCSV, blockCSV, dissolvedGeoJSON, flattenToVtd,
@@ -304,7 +304,7 @@ function handleHover(feat) {
 
 function renderUnitInfo() {
   const box = $('#unit-info');
-  if (!hoverTarget) { box.textContent = 'Hover or click a VTD.'; return; }
+  if (!hoverTarget) { box.textContent = ''; return; }
   const t = hoverTarget;
   const rows = [];
   const add = (k, v) => rows.push(`<tr><td>${k}</td><td>${v}</td></tr>`);
@@ -327,12 +327,9 @@ function renderUnitInfo() {
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
 
     if (state.isSplit(i)) {
-      const ov = state.blockOv.get(i);
-      box.insertAdjacentHTML('beforeend',
-        `<div class="legend-note">Split into ${ov.size} blocks.</div>`);
-      box.append(el('button', { text: 'Merge back to one VTD', onclick: () => doUnsplit(i) }));
+      box.append(el('button', { text: 'Merge blocks', onclick: () => doUnsplit(i) }));
     } else {
-      box.append(el('button', { text: 'Split this VTD into blocks', onclick: () => doSplit(i) }));
+      box.append(el('button', { text: 'Split into blocks', onclick: () => doSplit(i) }));
     }
   } else {
     const p = t.p;
@@ -347,9 +344,7 @@ function renderUnitInfo() {
     add('D composite *', p.dshare == null ? 'no votes' : fmtPct(p.dshare));
     add('D 2026 *', p.share26 == null ? 'no votes' : fmtPct(p.share26));
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
-    box.insertAdjacentHTML('beforeend',
-      '<div class="legend-note">* Block-level partisan figures are estimates: the VTD’s '
-      + 'votes are spread across its blocks by voting-age population.</div>');
+    box.insertAdjacentHTML('beforeend', '<div class="legend-note">* estimate</div>');
   }
 }
 
@@ -530,7 +525,7 @@ function wireTools() {
   // Party colours: red / blue unless the user picked another palette.
   const pal = $('#partisan-palette');
   for (const [k, p] of Object.entries(PARTISAN_PALETTES)) {
-    pal.append(el('option', { value: k }, [p.label + (k === DEFAULT_PARTISAN ? '' : ' (colorblind-friendly)')]));
+    pal.append(el('option', { value: k }, [p.label]));
   }
   pal.value = PARTISAN_PALETTES[prefs.get('partisanPalette')] ? prefs.get('partisanPalette') : DEFAULT_PARTISAN;
   partisanPal = setPartisanPalette(pal.value);
@@ -636,28 +631,17 @@ function renderLegend(aggColors = mapView.aggColors) {
   const mode = $('#shade-mode').value;
   const m = SHADE_MODES[mode];
   const host = $('#legend');
-  if (mode === 'district') {
-    host.innerHTML = `<div class="legend-ends" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;color:var(--fg2);font-family:inherit;font-size:11px">
-      ${[1, 2, 3, 4].map((d) =>
-        `<span><span class="pdot" style="background:${PRECINCT[d - 1]}"></span>Pct ${d}</span>`).join('')}
-      <span><span class="pdot" style="background:${UNASSIGNED}"></span>Unassigned</span>
-    </div>`;
-    return;
-  }
+  // The precinct colours are already on the picker above; no legend needed.
+  if (mode === 'district') { host.innerHTML = ''; return; }
   const pct = (x) => (mode === 'shift26' ? fmtSigned(x, 0) : fmtPct(x, 0));
+  // The party letter on each end replaces a sentence of explanation.
+  const party = m.partisan || mode === 'shift26';
   host.innerHTML = `
     <div class="legend-bar" style="background:${gradientCSS(m.ramp)}"></div>
-    <div class="legend-ends"><span>${pct(m.lo)}</span>
-      <span>${m.mid != null ? pct(m.mid) : ''}</span><span>${pct(m.hi)}</span></div>
-    <div class="legend-note">
-      <span class="pdot" style="background:${NODATA}"></span>
-      no data (${mode.startsWith('f_') || m.prop.startsWith('f_') ? 'zero VAP' : 'zero votes'})
-      ${m.partisan ? `<br>${partisanPal.dem} = Democratic, ${partisanPal.rep.toLowerCase()} = Republican.` : ''}
-      ${mode === 'shift26' ? '<br>Green = shift toward Democrats, purple = toward Republicans.' : ''}
-    </div>`;
+    <div class="legend-ends"><span>${party ? 'R ' : ''}${pct(m.lo)}</span>
+      <span>${m.mid != null ? pct(m.mid) : ''}</span><span>${pct(m.hi)}${party ? ' D' : ''}</span></div>`;
   if (aggColors && AGG_FIELD[mode] && lastMetrics) {
     host.insertAdjacentHTML('beforeend', `<div class="agg-legend">
-      <div class="legend-note">Each drawn precinct is filled with its own total. It updates as you paint.</div>
       ${[1, 2, 3, 4].map((d) => `<span><span class="pdot" style="background:${aggColors[d]}"></span>Pct ${d}
         <b>${fmtPct(lastMetrics.rows[d][AGG_FIELD[mode]])}</b></span>`).join('')}
     </div>`);
