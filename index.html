@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tarrant Redraw — Commissioner Precincts</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="boot">
+  <div class="boot-box">
+    <h1>Tarrant Redraw</h1>
+    <p id="boot-msg">Loading data…</p>
+    <div class="boot-bar"><div id="boot-bar-fill"></div></div>
+  </div>
+</div>
+
+<header id="topbar">
+  <div class="brand">Tarrant&nbsp;Redraw</div>
+
+  <label class="tb-field">Plan
+    <input id="plan-name" type="text" spellcheck="false" autocomplete="off">
+  </label>
+
+  <div class="tb-group">
+    <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+  </div>
+
+  <div class="tb-group">
+    <button id="btn-plans" title="Saved plans">Plans…</button>
+    <button id="btn-start" title="Start from a reference plan">Start from…</button>
+  </div>
+
+  <div class="tb-group">
+    <button id="btn-export-block" class="primary" title="Block assignment CSV for Dave's Redistricting">Export blocks (DRA)</button>
+    <button id="btn-export-menu">Export…</button>
+    <button id="btn-import">Import…</button>
+  </div>
+
+  <div class="tb-spacer"></div>
+  <div id="status" class="tb-status"></div>
+</header>
+
+<main id="shell">
+
+  <aside id="tools">
+    <section class="tool-sec">
+      <h2>Precincts</h2>
+      <div id="precinct-list"></div>
+      <button id="btn-unassign" class="pick-unassigned">
+        <span class="swatch swatch-none"></span>
+        <span class="pk-name">Unassigned (erase)</span>
+      </button>
+    </section>
+
+    <section class="tool-sec">
+      <h2>Brush</h2>
+      <div class="radio-row" id="brush-mode">
+        <label><input type="radio" name="brushmode" value="click" checked> Click / drag</label>
+        <label><input type="radio" name="brushmode" value="box"> Box select</label>
+        <label><input type="radio" name="brushmode" value="pan"> Pan / navigate</label>
+      </div>
+      <p class="hint">Drag to paint. <kbd>Shift</kbd>+drag boxes, <kbd>Alt</kbd>+click erases,
+        <kbd>Space</kbd> or right-drag pans. Keys <kbd>1</kbd>–<kbd>4</kbd> pick a precinct,
+        <kbd>0</kbd> erases.</p>
+    </section>
+
+    <section class="tool-sec">
+      <h2>Shading</h2>
+      <select id="shade-mode">
+        <optgroup label="Plan">
+          <option value="district" selected>Assigned precinct</option>
+        </optgroup>
+        <optgroup label="Partisan">
+          <option value="dshare">Democratic share — composite</option>
+          <option value="share26">Democratic share — 2026</option>
+          <option value="dshare_pre">Democratic share — 2020–24 baseline</option>
+          <option value="shift26">2026 shift vs baseline</option>
+        </optgroup>
+        <optgroup label="Demographics (VAP)">
+          <option value="hisp">Hispanic share of VAP</option>
+          <option value="black">Black share of VAP</option>
+          <option value="nonwhite">Nonwhite share of VAP</option>
+        </optgroup>
+      </select>
+      <div id="legend" class="legend"></div>
+      <label class="chk"><input type="checkbox" id="opt-opacity"> Dim shading under precinct colors</label>
+    </section>
+
+    <section class="tool-sec">
+      <h2>Overlays</h2>
+      <label class="chk"><input type="checkbox" id="ov-map7"> Map 7 precinct outlines</label>
+      <label class="chk"><input type="checkbox" id="ov-cities"> Cities</label>
+      <label class="chk"><input type="checkbox" id="ov-comm"> Communities</label>
+      <label class="chk"><input type="checkbox" id="ov-labels" checked> Basemap labels</label>
+    </section>
+
+    <section class="tool-sec">
+      <h2>Selected unit</h2>
+      <div id="unit-info" class="unit-info">Hover or click a VTD.</div>
+    </section>
+  </aside>
+
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="box-rubber" hidden></div>
+    <div id="map-note" class="map-note"></div>
+  </div>
+
+  <aside id="panel">
+    <div class="panel-head">
+      <h2>Analytics</h2>
+      <label class="chk inline"><input type="checkbox" id="cmp-map7" checked> Compare to Map 7</label>
+    </div>
+    <div id="panel-body"></div>
+  </aside>
+
+</main>
+
+<div id="modal-back" hidden><div id="modal"></div></div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

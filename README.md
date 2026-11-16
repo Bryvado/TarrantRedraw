@@ -1,0 +1,306 @@
+# Tarrant Redraw
+
+A browser app for hand-drawing Tarrant County, Texas commissioner precincts (4 districts)
+with live analytics, in the spirit of Dave's Redistricting but carrying 2026 election data.
+
+Static site. No backend, no build step, no dependency on R.
+
+---
+
+## Run it locally
+
+Any static server over HTTP works. From the repository root:
+
+```bash
+python3 -m http.server 8000
+```
+
+Then open <http://localhost:8000/>.
+
+It will **not** work by opening `index.html` from disk: browsers block `fetch` on
+`file://` URLs, so the data never loads. The app says so if you try.
+
+Alternatives, if you prefer:
+
+```bash
+npx --yes serve .
+```
+
+```bash
+php -S localhost:8000
+```
+
+## Deploy to GitHub Pages
+
+Everything is already relative-path, so the app runs unchanged under `/TarrantRedraw/`.
+This is verified — the full check suite was run against a `/TarrantRedraw/` subpath as well
+as the server root.
+
+1. In the repository: **Settings → Pages**.
+2. **Source: Deploy from a branch**.
+3. **Branch: `master`**, folder **`/ (root)`**. Save.
+
+The site appears at <https://bryvado.github.io/TarrantRedraw/> within a minute or two.
+
+Two things to know:
+
+- Pages serves the whole repository, so `data/blocks/` (782 files, 32 MB) is published too.
+  That is wanted: the app fetches those files one at a time when a VTD is split.
+- The repository is about 36 MB, comfortably inside the 1 GB Pages limit. No Action or
+  workflow file is needed.
+
+## How data refreshes arrive
+
+`data/` and the two `.R` files at the root are **read-only from the app's side**. They are
+generated in R on a separate machine and pushed from there. Nothing in the app writes to
+them, and nothing in the build depends on R.
+
+So: **pull before every push**, because refreshes land from the other machine.
+
+The app adapts to a refresh on its own in one place: `data/plans.csv` is read by its header,
+so any new reference-plan column (`pre2025`, say) shows up automatically in **Start from…**
+with no code change. Everything else — field names, the VTD key, the block file layout — is
+assumed to stay as documented below.
+
+---
+
+## What is in `data/`
+
+| File | What it is |
+|---|---|
+| `vtd.geojson` | 782 VTDs, EPSG:4326, simplified. Population, VAP by group, partisan composites, city and community membership. |
+| `vtd_adj.json` | Column-oriented adjacency: per-unit area and perimeter (EPSG:2276, feet), and each adjacent pair once with its shared border length. |
+| `plans.csv` | Reference plans, one row per VTD: `vtdkey`, `map7`, `rpack`. |
+| `map7.geojson` | Map 7 precinct polygons, for the outline overlay only. |
+| `cities.geojson` | 42 features: cities plus unincorporated area. Overlay. |
+| `communities.geojson` | 610 communities and neighborhoods. Overlay. |
+| `block_vtd.csv` | All 31,925 Tarrant 2020 Census blocks: `GEOID20`, `vtdkey`, `pop`. |
+| `blocks/<vtdkey>.geojson` | One file per VTD holding that VTD's blocks. Fetched one at a time, only when a VTD is split. |
+
+Everything in the brief was checked against the data and matched. Nothing differed.
+
+Two properties of the data the app leans on:
+
+- **Geometry is simplified**, so area, perimeter and adjacency are never computed from it.
+  They always come from `vtd_adj.json`.
+- **The VTD layer is topologically clean**: every interior boundary segment appears in
+  exactly two VTDs with identical coordinates (19,166 shared segments; the 252 singletons
+  are the county boundary). Precinct outlines and the dissolved GeoJSON export are therefore
+  produced by exact segment cancellation, with no polygon-clipping library.
+
+### Nulls
+
+86 VTDs have zero population and 80 have zero votes; `dshare`, `dshare_pre`, `share26` and
+`shift26` are null there. They shade as no-data, stay paintable, and add zero to every total.
+`city_name` is null in 27 VTDs and `comm_raw` in 472.
+
+---
+
+## Using it
+
+**Drawing.** Pick a precinct in the left rail (or press `1`–`4`; `0` erases). Left-drag
+paints. `Shift`+drag is a box select, `Alt`+click erases, and `Space` or a right-drag pans.
+The lock next to each precinct stops it being painted over. Undo and redo are `Ctrl+Z` /
+`Ctrl+Shift+Z`.
+
+**Shading** is one mode at a time: assigned precinct, Democratic share on the composite /
+2026 / the 2020–24 baseline, the 2026 shift, and Hispanic, Black and nonwhite share of VAP.
+Drawn precinct outlines stay on top in every mode. Map 7, cities and communities are
+separate toggles.
+
+**Analytics** recompute on every change: population and deviation from ideal with a
+user-set tolerance flag, Democratic share per precinct on the composite and on 2026 with
+the count of Democratic-leaning precincts, VAP shares, cities and communities split listed
+by name, and contiguity and Polsby-Popper from the adjacency file. The Map 7 numbers sit
+under each value for comparison.
+
+**Plans** autosave to `localStorage` continuously; **Plans…** keeps separate named copies,
+with duplicate and delete.
+
+### Colors
+
+Fixed, and deliberately not the usual red-vs-blue:
+
+- Partisan level: brown `#8c510a` → off-white `#f5f5f5` → teal `#01665e`, centered at 50%.
+  Teal is the Democratic end.
+- Change over time: purple `#762a83` → green `#1b7837`, centered at 0.
+- Demographic shares: one single-hue sequential ramp.
+- Precincts 1–4: `#1b9e77`, `#e6ab02`, `#7570b3`, `#666666`.
+
+---
+
+## Block-level splitting
+
+Block editing is an option, not the default. **Split this VTD into blocks** in the
+*Selected unit* box fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks
+individually. A plan is stored as a VTD-level assignment plus block-level overrides.
+
+- When a VTD is split, the analytics use its blocks' numbers in place of the VTD's.
+- Contiguity and Polsby-Popper stay VTD-level, with a split VTD counted at its
+  majority-population precinct. The panel marks them approximate whenever any VTD is split.
+- Painting a split VTD at VTD level discards the split.
+
+**Block-level partisan numbers are estimates.** Each VTD's votes are spread across its
+blocks by voting-age population. The UI says so everywhere they appear.
+
+---
+
+## Exports
+
+| Export | Format |
+|---|---|
+| VTD assignment CSV | Header `vtdkey,district`, 782 rows, integers. Plain enough to read straight into R as a reference plan. No comment lines. |
+| Block assignment CSV | Header `GEOID20,District`, 31,925 rows, 15-digit GEOID. One click from the toolbar. |
+| Dissolved precinct GeoJSON | Precinct polygons with population, VAP shares, partisan shares, contiguity and Polsby-Popper as properties. EPSG:4326. |
+
+Both CSV formats import back in. The format is detected from the identifier: a 15-digit id
+is read as a 2020 Census block, a shorter one as a VTD key. A header row is optional and
+both commas and pipes work as separators. A block file whose blocks disagree within a VTD
+is re-imported **as a split**, fetching only that VTD's block geometry.
+
+If a plan has split VTDs, the VTD-level CSV flattens each split to the precinct holding
+most of its population, and the export dialog says which VTDs were flattened.
+
+### On the Dave's Redistricting block format — please read
+
+The brief asked for this to be verified before building the export. **It could not be
+confirmed from the vendor.** What was found:
+
+- DRA's documentation site (`dra2020.github.io/dra-docs/…`) returns **404** on every page.
+  The DRA developers' "Importing Maps" post on Medium returns **403**. `davesredistricting.org`
+  is JavaScript-rendered and served no readable text.
+- The best available evidence is the [`geomander`](https://rdrr.io/cran/geomander/src/R/dra.R)
+  R package, the most widely used reader and writer of DRA exports. Its reader **requires
+  the columns `GEOID20` and `District`**, reads both as character (so leading zeros survive),
+  expects a header row, and accepts `.csv` only — `json not currently supported`. Its writer
+  emits `tibble(GEOID20 = shp$GEOID20, District = dist)`.
+- Separately, a DRA developer post (not reachable directly, seen only via search) describes
+  a block assignment file as one block id and one district per line, and says a `|` is
+  accepted as well as a comma.
+
+So the export writes `GEOID20,District` with a header, comma separated, with the 15-digit
+GEOID unchanged — and the export dialog offers `GEOID,District` and `BLOCKID,DISTRICT` as
+alternatives in case DRA wants something else.
+
+**What is still unverified, and what to do about it:** whether DRA requires every block in
+the state rather than one county, and what value it reads as unassigned. The export covers
+all 31,925 Tarrant blocks, so completeness-within-the-county is not in question, and
+unassigned blocks are written as `0` by default (switchable to blank in the dialog).
+
+The reliable way to settle it: draw any map in DRA, export it, and look at the header of
+the file it produces. Its own export is the best template for a re-import. If it differs
+from `GEOID20,District`, say so and the default takes one line to change in
+`js/io.js` (`DRA_HEADERS`).
+
+---
+
+## Verification
+
+Every check in the brief was run and passes. Two suites:
+
+**In Node, directly against `data/`** — the analytics and dissolve code imported and run
+outside the browser.
+
+**In a real browser (headless Chromium, Playwright)** — the app driven through its own UI
+and its public handle, against both `http://localhost:8000/` and a `/TarrantRedraw/`
+subpath, to match GitHub Pages.
+
+| Check | Result |
+|---|---|
+| 1. Map 7 populations | 528,827 / 524,327 / 529,825 / 527,661 — exact |
+| 2. Map 7 Democratic shares, composite | 73.6% / 51.3% / 43.6% / 47.9% — exact |
+| 2. Map 7 Democratic shares, 2026 | 78.5% / 57.6% / 48.8% / 55.1% — exact |
+| 2. County | 2,110,640 people, 52.4% composite, 58.5% on 2026 — exact |
+| 2. R-pack populations | 545,087 / 540,240 / 518,489 / 506,824 — exact |
+| 2. R-pack composite shares | 40.8% / 57.9% / 57.8% / 58.1% — exact |
+| 2. Contiguity | both plans, all four precincts contiguous |
+| 2. Adjacency graph | one connected component, 2,065 edges |
+| 3. VTD CSV round trip | 782 rows, re-import reproduces every number exactly |
+| 3. Block CSV | 31,925 rows; block populations summed by precinct equal check 1 |
+| 4. Brush across 782 VTDs | see note below |
+| 4. Split a VTD | 133 blocks in ~0.4 s |
+| 5. Discontiguous precinct | flagged in the panel and on the map |
+| 6. Local server and Pages subpath | both pass the whole suite, no console errors |
+
+**On check 4, one honest caveat.** The app's own paint handler costs **0.31–0.44 ms per
+mouse move** (measured over 360 synthetic moves painting 487 VTDs), and assigning,
+recoloring and re-dissolving all 782 VTDs at once takes **4–7 ms**. Those are the numbers
+the app controls, and they are comfortable.
+
+What could not be measured here is the frame rate on real hardware. This container has no
+GPU — WebGL runs on SwiftShader, where a single map frame costs about **180–200 ms**, which
+swamps everything else and makes a drag feel slow *in the container*. On a laptop with a
+GPU a frame is roughly 5–15 ms, so painting should feel immediate, but that is inference
+from the frame cost, not something verified on real hardware. Worth a quick look on an
+actual laptop before calling check 4 closed.
+
+### Re-running the checks
+
+```bash
+python3 -m http.server 8731
+```
+
+The two suites live outside the repository (they were written as scratch verification, not
+shipped). The app exposes `window.TarrantRedraw` — `state`, `data`, `metrics`, `mapView`
+and the import/export functions — so the checks can be re-driven from the browser console
+or any Playwright script.
+
+---
+
+## How it is built
+
+No framework. ES modules, plain DOM, MapLibre GL JS 4.7.1 from unpkg. The basemap is
+OpenFreeMap positron only.
+
+| File | Role |
+|---|---|
+| `js/data.js` | Loads and normalises `data/`. Builds typed-array tables and a CSR adjacency graph. Lazily fetches block files. |
+| `js/state.js` | Plan state: assignments, block overrides, locks, undo/redo, `localStorage` autosave, named plans. |
+| `js/metrics.js` | All analytics. A full recompute is well under a millisecond, so every edit recomputes everything rather than keeping incremental accumulators in step. |
+| `js/topology.js` | Exact precinct dissolve by segment cancellation; ring stitching with hole classification for the GeoJSON export. |
+| `js/mapview.js` | MapLibre setup, layers, shading expressions, paint interactions. |
+| `js/panel.js` | Analytics panel. |
+| `js/io.js` | Import and export. |
+| `js/colors.js` | The color ramps. |
+| `js/app.js` | Wiring, toolbar, dialogs, the splitting flow. |
+
+Painting recolors through `feature-state` with `vtdkey` as the feature id (`promoteId`), so
+no source data is re-sent on a paint.
+
+**Shares are always computed from summed votes** — `sum ndv / (sum ndv + sum nrv)` — never
+by averaging VTD shares.
+
+---
+
+## Known limits
+
+- **No per-precinct 2020–24 baseline share.** The data carries the baseline only as a VTD
+  share (`dshare_pre`), with no baseline vote counts, so it cannot be aggregated to a
+  precinct. It is available as a shading mode but not as an analytics column. If a precinct
+  column is wanted, the export would need `ndv_pre` and `nrv_pre`.
+- **The 2026 county commissioner race is not in the data** and cannot be re-aggregated to
+  other plans — it was on the ballot in only two of the four precincts. The 2026 measure
+  everywhere is the mean of U.S. Senate and Governor.
+- **Community splits cover mapped communities only.** 310 of 782 VTDs carry a community, so
+  138 communities have VTDs; the rest of the 610-feature overlay is not carried on any VTD
+  and is not counted. The panel says so.
+- **Contiguity and Polsby-Popper are VTD-level**, by design, and marked approximate when any
+  VTD is split.
+- Plans live in this browser's `localStorage` only. There are no accounts and no sync.
+
+## Attribution
+
+The map attribution control credits OpenFreeMap and OpenMapTiles, OpenStreetMap, the 2020
+Census for population and VAP, the Texas statewide contests behind the composites, and both
+community sources: **SimpleMaps** (607 neighborhoods) and **Districtr** (3 communities of
+interest).
+
+> **Open question for Bryson, before publishing.** The neighborhood layer is understood to
+> be ODbL. The exact credit line ODbL requires has not been confirmed — the current wording
+> is a placeholder. Please confirm what SimpleMaps requires and the line will be updated in
+> `js/mapview.js` (`customAttribution`).
+
+## Not in scope
+
+No sampler, optimizer or auto-draw in the browser. No racial targets. No accounts or
+multi-user editing. No changes to the R code.
