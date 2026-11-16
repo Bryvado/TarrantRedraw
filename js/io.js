@@ -1,20 +1,19 @@
 // Import and export.
 //
-// DRA block assignment format: the geomander R package (the most widely used
-// reader/writer of DRA exports) requires the columns GEOID20 and District, read
-// as character with a header row, comma separated. DRA's own documentation site
-// is offline, so that is the format used here, with the header selectable in the
-// export dialog. See README for what was and was not verified.
+// DRA block assignment format, one format and no options: header
+// "GEOID20,District", then one row per ASSIGNED block, GEOID20 as the 15-digit
+// string and District an integer 1-4. That is what the geomander R package (the
+// most widely used reader/writer of DRA exports) reads.
+//
+// Unassigned blocks are left out, never written as 0 or blank. DRA builds its
+// districts from the labels it finds in the file, so a 0 turns into a fifth,
+// ghost district; a block missing from the file is simply unassigned there.
 
 import { loadBlockVtd, loadBlocks } from './data.js';
 import { dissolvePolygon } from './topology.js';
 import { parseCSV } from './util.js';
 
-export const DRA_HEADERS = {
-  'GEOID20,District': ['GEOID20', 'District'],
-  'GEOID,District': ['GEOID', 'District'],
-  'BLOCKID,DISTRICT': ['BLOCKID', 'DISTRICT'],
-};
+export const DRA_HEADER = 'GEOID20,District';
 
 /** Effective VTD-level assignment, flattening any split to its majority precinct. */
 export function flattenToVtd(state, blockPopByIdx) {
@@ -29,29 +28,29 @@ export function flattenToVtd(state, blockPopByIdx) {
   return { asn: out, flattened };
 }
 
-/** vtdkey,district — one row per VTD, plain enough to read straight into R. */
+/**
+ * vtdkey,district — one row per ASSIGNED VTD. Unassigned VTDs are left out, so
+ * in R df$district[match(map$vtdkey, df$vtdkey)] gives NA for them.
+ */
 export function vtdCSV(data, asn) {
   const lines = ['vtdkey,district'];
-  for (let i = 0; i < data.n; i++) lines.push(`${data.keys[i]},${asn[i]}`);
+  for (let i = 0; i < data.n; i++) if (asn[i] >= 1 && asn[i] <= 4) lines.push(`${data.keys[i]},${asn[i]}`);
   return lines.join('\n') + '\n';
 }
 
 /**
- * Block assignment CSV: one row for every block in data/block_vtd.csv. Blocks
- * take their VTD's precinct, except in split VTDs where the override wins.
+ * Block assignment CSV for DRA: one row for every assigned block in
+ * data/block_vtd.csv. Blocks take their VTD's precinct, except in split VTDs
+ * where the override wins. Unassigned blocks are counted, not written.
  */
-export async function blockCSV(data, state, {
-  header = 'GEOID20,District', unassigned = '0',
-} = {}) {
+export async function blockCSV(data, state) {
   const bv = await loadBlockVtd();
-  const [c1, c2] = DRA_HEADERS[header] || DRA_HEADERS['GEOID20,District'];
 
   // vtdkey -> override map, for split VTDs only.
   const ovByKey = new Map();
   for (const idx of state.splitIndices()) ovByKey.set(data.keys[idx], state.blockOv.get(idx));
 
-  const out = new Array(bv.count + 1);
-  out[0] = `${c1},${c2}`;
+  const out = [DRA_HEADER];
   let missing = 0;
   const byPrecinct = new Float64Array(5);
   const countByPrecinct = new Int32Array(5);
@@ -68,14 +67,17 @@ export async function blockCSV(data, state, {
     } else {
       d = idx === undefined ? 0 : state.asn[idx];
     }
+    if (!(d >= 1 && d <= 4)) d = 0;
     byPrecinct[d] += bv.pop[i];
     countByPrecinct[d]++;
-    out[i + 1] = `${bv.geoid[i]},${d === 0 ? unassigned : d}`;
+    if (d) out.push(`${bv.geoid[i]},${d}`);
   }
 
   return {
     text: out.join('\n') + '\n',
-    rows: bv.count,
+    rows: out.length - 1,
+    total: bv.count,
+    unassigned: countByPrecinct[0],
     missing,
     popByPrecinct: Array.from(byPrecinct),
     countByPrecinct: Array.from(countByPrecinct),

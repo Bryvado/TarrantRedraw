@@ -191,6 +191,29 @@ export class MapView {
       paint: { 'line-color': '#ffe066', 'line-width': 2.4 },
     });
 
+    // A piece picked in the Find problems tool.
+    const NONE = ['literal', []];
+    m.addLayer({
+      id: 'piece-hl-fill', type: 'fill', source: 'vtd',
+      filter: ['in', ['id'], NONE],
+      paint: { 'fill-color': '#ff3b8d', 'fill-opacity': 0.28 },
+    });
+    m.addLayer({
+      id: 'piece-hl', type: 'line', source: 'vtd',
+      filter: ['in', ['id'], NONE],
+      paint: { 'line-color': '#ff3b8d', 'line-width': 2.6 },
+    });
+    m.addLayer({
+      id: 'piece-hl-block-fill', type: 'fill', source: 'blocks',
+      filter: ['in', ['get', 'GEOID20'], NONE],
+      paint: { 'fill-color': '#ff3b8d', 'fill-opacity': 0.32 },
+    });
+    m.addLayer({
+      id: 'piece-hl-block', type: 'line', source: 'blocks',
+      filter: ['in', ['get', 'GEOID20'], NONE],
+      paint: { 'line-color': '#ff3b8d', 'line-width': 2.2 },
+    });
+
     // Hover ring.
     m.addLayer({
       id: 'vtd-hover', type: 'line', source: 'vtd',
@@ -260,6 +283,17 @@ export class MapView {
     this.map.setFilter('vtd-selected-halo', v);
     this.map.setFilter('vtd-selected', v);
     this.map.setFilter('block-selected', ['==', ['get', 'GEOID20'], geoid ?? '']);
+  }
+
+  /** Highlight a piece: VTD keys and block GEOIDs. Pass nothing to clear. */
+  setPieceHighlight(vtdKeys = [], geoids = []) {
+    if (!this.ready) return;
+    const v = ['in', ['id'], ['literal', vtdKeys]];
+    const b = ['in', ['get', 'GEOID20'], ['literal', geoids]];
+    this.map.setFilter('piece-hl-fill', v);
+    this.map.setFilter('piece-hl', v);
+    this.map.setFilter('piece-hl-block-fill', b);
+    this.map.setFilter('piece-hl-block', b);
   }
 
   // ---- shading ------------------------------------------------------------

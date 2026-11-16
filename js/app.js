@@ -5,6 +5,7 @@ import { loadAll, loadBlocks } from './data.js';
 import { PlanState, planLib, prefs } from './state.js';
 import { computeMetrics } from './metrics.js';
 import { buildTopology } from './topology.js';
+import { analyze, buildSplitTopology, proposal, unitText } from './fragments.js';
 import { MapView, SHADE_MODES, setPartisanPalette } from './mapview.js';
 import { Panel } from './panel.js';
 import {
@@ -12,7 +13,7 @@ import {
 } from './colors.js';
 import {
   vtdCSV, blockCSV, dissolvedGeoJSON, flattenToVtd,
-  sniffCSV, applyVtdImport, applyBlockImport, DRA_HEADERS,
+  sniffCSV, applyVtdImport, applyBlockImport, DRA_HEADER,
 } from './io.js';
 import { $, el, fmtInt, fmtPct, fmtSigned, download } from './util.js';
 
@@ -97,6 +98,8 @@ async function boot() {
     sniffCSV, applyVtdImport, applyBlockImport, flattenToVtd,
     setActive: (d) => setActive(d),
     doSplit, doUnsplit, loadSavedPlan, saveCurrentPlan,
+    get problems() { return problems; }, openProblems, openCleanup, applyCleanup,
+    get cleanupRows() { return cleanupRows; },
     get blockFeatureCount() { return mapView.blockFeatures.size; },
     select: (idx) => selectVtd(idx), get selected() { return selected; },
   };
@@ -150,6 +153,7 @@ function recompute(force) {
   updateMapNote(lastMetrics);
   applyAggShading();
   renderUnitInfo();
+  refreshProblems();
 }
 
 // Shading modes that can be totalled for a drawn precinct, and the metrics
@@ -192,7 +196,7 @@ function applyAggShading() {
   renderLegend(colors);
 }
 
-const WHOLE_PLAN_EDITS = new Set(['clear', 'start', 'import']);
+const WHOLE_PLAN_EDITS = new Set(['clear', 'start', 'import', 'cleanup']);
 
 function onStateChange(detail) {
   if (detail.kind === 'reset') {
@@ -488,6 +492,7 @@ function toggleLock(d) {
   state.autosave();
   buildPrecinctList();
   updateSaveState();
+  refreshProblems();                 // locks decide which cleanups can run
   setStatus(`Precinct ${d} ${state.locks[d - 1] ? 'locked' : 'unlocked'}.`);
 }
 
@@ -685,6 +690,7 @@ function setStatus(text, cls = '') {
 // ---------------------------------------------------------------- tools ----
 function wireTools() {
   $('#btn-unassign').onclick = () => setActive(0);
+  $('#btn-problems').onclick = () => ($('#problems').hidden ? openProblems() : closeProblems());
 
   for (const r of document.querySelectorAll('#brush-mode input')) {
     r.onchange = () => mapView.setBrushMode(r.value);
@@ -843,6 +849,251 @@ function renderLegend(aggColors = mapView.aggColors) {
     <div class="legend-bar" style="background:${gradientCSS(m.ramp)}"></div>
     <div class="legend-ends"><span>${party ? 'R ' : ''}${pct(m.lo)}</span>
       <span>${m.mid != null ? pct(m.mid) : ''}</span><span>${pct(m.hi)}${party ? ' D' : ''}</span></div>`;
+}
+
+// ------------------------------------------------------- find problems ----
+// Connected pieces of each precinct, from fragments.js. The analysis is cheap
+// and runs after every recompute; block adjacency for split VTDs is built once
+// per VTD in the background and cached.
+let problems = null;
+let problemsView = 'list';          // 'list' | 'cleanup'
+let cleanupThreshold = 0.01;        // share of the ideal population
+let cleanupTicks = new Map();       // piece key -> ticked, overrides the threshold
+let cleanupRows = [];
+const splitTopo = new Map();        // idx -> topology, or a pending promise
+
+function topoOf(i) { const t = splitTopo.get(i); return t && !(t instanceof Promise) ? t : undefined; }
+
+function ensureSplitTopologies() {
+  for (const i of state.splitIndices()) {
+    if (splitTopo.has(i)) continue;
+    const p = buildSplitTopology(data, i, loadBlocks).then((t) => {
+      splitTopo.set(i, t);
+      if (!t.ok) console.warn(`Block borders for VTD ${data.keys[i]} failed the check:`, t.problems);
+      refreshProblems();
+    }, (e) => {
+      splitTopo.set(i, { idx: i, ok: false, problems: [String(e.message || e)] });
+      refreshProblems();
+    });
+    splitTopo.set(i, p);
+  }
+}
+
+const pieceKey = (p) => `${p.d}:${p.vtds[0] ?? ''}:${p.blocks[0] ? p.blocks[0].join('/') : ''}`;
+
+function refreshProblems() {
+  if (!state || !mapView) return;
+  ensureSplitTopologies();
+  problems = analyze(data, state, { topoOf, blockPopOf: (i) => mapView.blockPopMap(i) });
+  const count = problems.fragments.length + problems.islands.length;
+  const badge = $('#prob-badge');
+  badge.textContent = String(count);
+  badge.classList.toggle('zero', count === 0);
+  $('#btn-problems').title = count
+    ? `${problems.fragments.length} fragment${problems.fragments.length === 1 ? '' : 's'}, `
+      + `${problems.islands.length} unassigned island${problems.islands.length === 1 ? '' : 's'}`
+    : 'Every precinct is in one piece and nothing is unassigned';
+  if (!$('#problems').hidden) renderProblems();
+}
+
+function openProblems() {
+  problemsView = 'list';
+  $('#problems').hidden = false;
+  $('#btn-problems').classList.add('on');
+  refreshProblems();
+}
+function closeProblems() {
+  $('#problems').hidden = true;
+  $('#btn-problems').classList.remove('on');
+  mapView.setPieceHighlight();
+}
+function openCleanup() {
+  problemsView = 'cleanup';
+  cleanupTicks = new Map();
+  $('#problems').hidden = false;
+  $('#btn-problems').classList.add('on');
+  refreshProblems();
+}
+
+function zoomToPiece(p) {
+  const keys = p.vtds.map((i) => data.keys[i]);
+  const geoids = p.blocks.map(([, g]) => g);
+  mapView.setPieceHighlight(keys, geoids);
+  let x0 = 180, y0 = 90, x1 = -180, y1 = -90;
+  const grow = (f) => {
+    const b = bboxOf(f);
+    if (!b) return;
+    x0 = Math.min(x0, b[0][0]); y0 = Math.min(y0, b[0][1]);
+    x1 = Math.max(x1, b[1][0]); y1 = Math.max(y1, b[1][1]);
+  };
+  for (const i of p.vtds) grow(data.vtdGeo.features[i]);
+  for (const [i, g] of p.blocks) {
+    const f = (mapView.blockFeatures.get(i) || []).find((ff) => ff.properties.GEOID20 === g);
+    grow(f);
+  }
+  if (x0 <= x1) mapView.map.fitBounds([[x0, y0], [x1, y1]], { padding: 90, duration: 450, maxZoom: 14.5 });
+}
+
+const pdot = (d) => (d
+  ? `<span class="pdot" style="background:${PRECINCT[d - 1]}"></span>`
+  : '<span class="pdot pdot-none"></span>');
+
+function pieceRow(p, label, extra = []) {
+  const row = el('div', { class: 'pr-row' }, [
+    ...extra,
+    el('span', { class: 'pr-name', html: label }),
+    el('span', { class: 'pr-units', text: unitText(p) }),
+    el('span', { class: 'pr-pop', text: fmtInt(p.pop) }),
+    el('button', { class: 'pr-zoom', text: 'Zoom', title: 'Frame and highlight this piece', onclick: () => zoomToPiece(p) }),
+  ]);
+  return row;
+}
+
+function renderProblems() {
+  const box = $('#problems');
+  box.innerHTML = '';
+  const head = (title, back) => box.append(el('div', { class: 'pb-head' }, [
+    back ? el('button', { class: 'linkbtn', text: '‹ Back', onclick: () => { problemsView = 'list'; renderProblems(); } }) : null,
+    el('span', { class: 'pb-title', text: title }),
+    el('button', { class: 'm-close', text: '×', title: 'Close', onclick: closeProblems }),
+  ]));
+  const p = problems;
+  const notes = [];
+  if (p.pending.length) notes.push(`Checking block borders for ${p.pending.length} split VTD${p.pending.length === 1 ? '' : 's'}…`);
+  if (p.unclean.length) {
+    notes.push(`Block borders for VTD ${p.unclean.map((i) => data.keys[i]).join(', ')} did not line up with the `
+      + 'VTD adjacency, so each counts as one unit at its majority precinct and is not offered for cleanup.');
+  }
+
+  if (problemsView === 'cleanup') { renderCleanup(box, head, notes); return; }
+
+  head('Find problems');
+  for (const n of notes) box.append(el('div', { class: 'pb-note', text: n }));
+  const count = p.fragments.length + p.islands.length;
+  box.append(el('div', { class: 'pb-sum', html: count
+    ? `<b>${p.fragments.length}</b> fragment${p.fragments.length === 1 ? '' : 's'} · `
+      + `<b>${p.islands.length}</b> unassigned island${p.islands.length === 1 ? '' : 's'}`
+    : '<span class="good">Every precinct is in one piece and nothing is unassigned.</span>' }));
+
+  const list = el('div', { class: 'pb-list' });
+  for (let d = 1; d <= 4; d++) {
+    const main = p.mains[d];
+    const frags = p.fragments.filter((f) => f.d === d);
+    list.append(el('div', { class: 'pb-sec', html:
+      `${pdot(d)}Precinct ${d} <span class="dim">${main ? `${1 + frags.length} piece${frags.length ? 's' : ''}` : 'empty'}</span>` }));
+    if (main) list.append(pieceRow(main, 'Main body'));
+    frags.forEach((f, k) => list.append(pieceRow(f, `<span class="flag-bad">Fragment ${k + 1}</span>`)));
+  }
+  if (p.islands.length) {
+    list.append(el('div', { class: 'pb-sec', html: `${pdot(0)}Unassigned <span class="dim">${p.islands.length} island${p.islands.length === 1 ? '' : 's'}</span>` }));
+    p.islands.forEach((f, k) => list.append(pieceRow(f, `Island ${k + 1}`)));
+  }
+  box.append(list);
+  box.append(el('div', { class: 'pb-foot' }, [
+    el('button', { class: 'primary', text: 'Clean up fragments…', disabled: !count,
+      onclick: () => { problemsView = 'cleanup'; cleanupTicks = new Map(); renderProblems(); } }),
+  ]));
+}
+
+function renderCleanup(box, head, notes) {
+  head('Clean up fragments', true);
+  for (const n of notes) box.append(el('div', { class: 'pb-note', text: n }));
+  const ideal = lastMetrics.ideal;
+  const pieces = [...problems.fragments, ...problems.islands];
+
+  cleanupRows = pieces.map((piece) => {
+    const prop = proposal(piece, state);
+    const key = pieceKey(piece);
+    const auto = piece.pop < cleanupThreshold * ideal;
+    const ticked = !prop.reason && (cleanupTicks.has(key) ? cleanupTicks.get(key) : auto);
+    return { piece, key, to: prop.to, reason: prop.reason, ticked };
+  });
+
+  const thr = el('input', { type: 'number', min: '0', max: '100', step: '0.5', value: String(+(cleanupThreshold * 100).toFixed(2)) });
+  thr.addEventListener('change', () => {
+    const v = parseFloat(thr.value);
+    if (Number.isFinite(v) && v >= 0) { cleanupThreshold = v / 100; cleanupTicks = new Map(); renderProblems(); }
+  });
+  box.append(el('div', { class: 'pb-thr' }, [
+    'Tick pieces under ', thr, ` % of the ideal population (${fmtInt(cleanupThreshold * ideal)} people). `,
+    el('span', { class: 'dim', text: 'Larger ones change the plan materially.' }),
+  ]));
+
+  const list = el('div', { class: 'pb-list' });
+  if (!cleanupRows.length) list.append(el('div', { class: 'pb-note', text: 'Nothing to clean up.' }));
+  for (const r of cleanupRows) {
+    const cb = el('input', { type: 'checkbox' });
+    cb.checked = r.ticked;
+    cb.disabled = !!r.reason;
+    cb.onchange = () => { cleanupTicks.set(r.key, cb.checked); r.ticked = cb.checked; renderDelta(); updateApply(); };
+    const from = r.piece.d ? `Pct ${r.piece.d}` : 'Unassigned';
+    const label = r.to
+      ? `${pdot(r.piece.d)}${from} → ${pdot(r.to)}Pct ${r.to}`
+      : `${pdot(r.piece.d)}${from}`;
+    const row = pieceRow(r.piece, label, [cb]);
+    if (r.reason) row.append(el('div', { class: 'pr-skip', text: `Skipped: ${r.reason}` }));
+    list.append(row);
+  }
+  box.append(list);
+
+  const delta = el('div', { class: 'pb-delta' });
+  const renderDelta = () => {
+    const ch = [0, 0, 0, 0, 0];
+    for (const r of cleanupRows) if (r.ticked) { ch[r.piece.d] -= r.piece.pop; ch[r.to] += r.piece.pop; }
+    const rows = [1, 2, 3, 4].map((d) => {
+      const now = lastMetrics.rows[d].pop, after = now + ch[d];
+      const dev = (after - ideal) / ideal;
+      return `<tr><td>${pdot(d)}Pct ${d}</td><td>${fmtInt(now)}</td>`
+        + `<td class="${ch[d] ? (ch[d] > 0 ? 'up' : 'down') : 'dim'}">${ch[d] ? (ch[d] > 0 ? '+' : '−') + fmtInt(Math.abs(ch[d])) : '—'}</td>`
+        + `<td>${fmtInt(after)}</td><td class="${Math.abs(dev) > panel.tolerance ? 'flag-bad' : ''}">${fmtSigned(dev, 2)}</td></tr>`;
+    });
+    if (ch[0]) {
+      rows.push(`<tr class="dim"><td>${pdot(0)}Unassigned</td><td>${fmtInt(lastMetrics.rows[0].pop)}</td>`
+        + `<td>−${fmtInt(-ch[0])}</td><td>${fmtInt(lastMetrics.rows[0].pop + ch[0])}</td><td></td></tr>`);
+    }
+    delta.innerHTML = '<table class="at"><thead><tr><th>Population</th><th>Now</th><th>Change</th><th>After</th><th>Deviation</th></tr></thead>'
+      + `<tbody>${rows.join('')}</tbody></table>`;
+  };
+  renderDelta();
+  box.append(delta);
+
+  const apply = el('button', { class: 'primary', onclick: () => applyCleanup() });
+  const updateApply = () => {
+    const k = cleanupRows.filter((r) => r.ticked).length;
+    apply.textContent = `Apply ${k} change${k === 1 ? '' : 's'}`;
+    apply.disabled = !k;
+  };
+  updateApply();
+  box.append(el('div', { class: 'pb-foot' }, [
+    el('span', { class: 'dim', text: 'One step; Undo reverses it.' }),
+    apply,
+  ]));
+}
+
+/** Reassign every ticked piece to its proposed precinct, as one undoable step. */
+function applyCleanup() {
+  const rows = cleanupRows.filter((r) => r.ticked && r.to && !r.reason);
+  if (!rows.length) return false;
+  let moved = 0, people = 0;
+  const blocked = [];
+  for (const r of rows) {
+    const p = r.piece;
+    let n = state.paint(p.vtds, r.to).length;
+    const byVtd = new Map();
+    for (const [i, g] of p.blocks) { if (!byVtd.has(i)) byVtd.set(i, []); byVtd.get(i).push(g); }
+    for (const [i, gs] of byVtd) n += state.paintBlocks(i, gs, r.to).length;
+    if (n) { moved++; people += p.pop; } else blocked.push(r);
+  }
+  const skipped = cleanupRows.filter((r) => r.reason);
+  problemsView = 'list';             // the commit re-renders the panel
+  mapView.setPieceHighlight();
+  if (!state.commit('cleanup')) { setStatus('Nothing changed: every ticked piece is locked.', 'warn'); return false; }
+  const bits = [`Moved ${moved} piece${moved === 1 ? '' : 's'} (${fmtInt(people)} people). Z undoes it.`];
+  if (skipped.length) {
+    bits.push(`Skipped ${skipped.length}: ${[...new Set(skipped.map((r) => r.reason))].join('; ')}.`);
+  }
+  setStatus(bits.join(' '), skipped.length ? 'warn' : 'ok');
+  return true;
 }
 
 // ------------------------------------------------------- block splitting ----
@@ -1117,22 +1368,27 @@ function showExportDialog() {
       + 'precinct holding most of its population. Use the block CSV to keep the splits.' })
     : null;
   const unassigned = lastMetrics.rows[0].units;
+  const h3 = (text, top) => el('h3', { style: `margin:${top}px 0 4px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3)`, text });
 
   openModal('Export', [
     warn,
-    unassigned ? el('p', { class: 'err', html:
-      `⚠ ${unassigned} VTDs are unassigned; they are written as district <code>0</code>.` }) : null,
 
-    el('h3', { style: 'margin:0 0 4px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3)', text: 'VTD assignment CSV' }),
-    el('p', { class: 'tight', html: 'Header <code>vtdkey,district</code>, one row per VTD, '
-      + `${data.n} rows. Plain enough to read straight into R as a reference plan.` }),
-    el('button', { text: 'Download VTD CSV', onclick: () => {
-      const { asn } = flattenToVtd(state, (i) => mapView.blockPopMap(i));
-      download(`${slug(state.name)}_vtd.csv`, vtdCSV(data, asn));
-      setStatus(`Exported ${data.n} VTD rows.`, 'ok');
-    } }),
+    h3('VTD assignment CSV', 0),
+    el('p', { class: 'tight', html: 'Header <code>vtdkey,district</code>, one row per assigned VTD, '
+      + 'district 1–4. Unassigned VTDs are left out, so in R '
+      + '<code>df$district[match(map$vtdkey, df$vtdkey)]</code> gives <code>NA</code> for them.' }),
+    el('div', { class: 'exp-row' }, [
+      el('button', { text: 'Download VTD CSV', onclick: () => {
+        const { asn } = flattenToVtd(state, (i) => mapView.blockPopMap(i));
+        const rows = asn.reduce((k, d) => k + (d >= 1 && d <= 4 ? 1 : 0), 0);
+        download(`${slug(state.name)}_vtd.csv`, vtdCSV(data, asn));
+        setStatus(`Exported ${fmtInt(rows)} VTD rows.`, 'ok');
+      } }),
+      unassigned ? unassignedNote(`${fmtInt(unassigned)} VTD${unassigned === 1 ? '' : 's'} unassigned; `
+        + 'they are left out of the file') : null,
+    ]),
 
-    el('h3', { style: 'margin:18px 0 4px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3)', text: 'Dissolved precinct GeoJSON' }),
+    h3('Dissolved precinct GeoJSON', 18),
     el('p', { class: 'tight', html: 'Precinct polygons with population, VAP shares, partisan shares, '
       + 'contiguity and Polsby-Popper as properties. EPSG:4326.' }),
     el('button', { text: 'Download GeoJSON', onclick: () => {
@@ -1141,56 +1397,68 @@ function showExportDialog() {
       setStatus('Exported dissolved precinct GeoJSON.', 'ok');
     } }),
 
-    el('h3', { style: 'margin:18px 0 4px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3)', text: 'Block assignment CSV' }),
-    el('p', { class: 'tight', html: 'Also on the toolbar. See the block export dialog for the header options.' }),
+    h3('Block assignment CSV', 18),
+    el('p', { class: 'tight', text: 'Also on the toolbar.' }),
     el('button', { text: 'Block CSV for DRA…', onclick: () => exportBlocks() }),
   ]);
 }
 
-async function exportBlocks() {
-  const hdr = prefs.get('draHeader', 'GEOID20,District');
-  const sel = el('select', {}, Object.keys(DRA_HEADERS).map((k) =>
-    el('option', { value: k, selected: k === hdr }, [k])));
-  const unassignedSel = el('select', {}, [
-    el('option', { value: '0', selected: prefs.get('draUnassigned', '0') === '0' }, ['0']),
-    el('option', { value: '', selected: prefs.get('draUnassigned', '0') === '' }, ['(blank)']),
+/** "N … unassigned; …", with a Find link that opens the Find problems tool. */
+function unassignedNote(text) {
+  return el('span', { class: 'exp-note' }, [
+    `${text}. `,
+    el('button', { class: 'linkbtn inline', text: 'Find', onclick: () => { closeModal(); openProblems(); } }),
   ]);
+}
+
+async function exportBlocks() {
   const out = el('div');
+  const note = el('div', { class: 'exp-row' });
+  const btn = el('button', { class: 'primary', text: 'Download block CSV' });
+  note.append(btn);
 
   const run = async () => {
     out.innerHTML = 'Building…';
-    prefs.set('draHeader', sel.value);
-    prefs.set('draUnassigned', unassignedSel.value);
     try {
-      const res = await blockCSV(data, state, { header: sel.value, unassigned: unassignedSel.value });
+      const res = await blockCSV(data, state);
       download(`${slug(state.name)}_blocks.csv`, res.text);
+      const total = res.popByPrecinct.slice(1).reduce((a, b) => a + b, 0);
       out.innerHTML =
-        `<p class="tight">Exported <strong>${fmtInt(res.rows)}</strong> block rows.</p>`
+        `<p class="tight">Exported <strong>${fmtInt(res.rows)}</strong> block rows`
+        + `${res.unassigned ? ` (${fmtInt(res.unassigned)} unassigned blocks left out)` : ''}.</p>`
         + '<pre>' + [1, 2, 3, 4].map((d) =>
           `Precinct ${d}  ${fmtInt(res.countByPrecinct[d]).padStart(7)} blocks  ${fmtInt(res.popByPrecinct[d]).padStart(10)} people`).join('\n')
-        + (res.countByPrecinct[0]
-          ? `\nUnassigned ${fmtInt(res.countByPrecinct[0]).padStart(6)} blocks  ${fmtInt(res.popByPrecinct[0]).padStart(10)} people` : '')
-        + `\n${''.padEnd(46, '─')}\nTotal      ${fmtInt(res.rows).padStart(7)} blocks  ${fmtInt(res.popByPrecinct.reduce((a, b) => a + b, 0)).padStart(10)} people</pre>`;
+        + `\n${''.padEnd(46, '─')}\nIn file    ${fmtInt(res.rows).padStart(7)} blocks  ${fmtInt(total).padStart(10)} people`
+        + (res.unassigned
+          ? `\nLeft out   ${fmtInt(res.unassigned).padStart(7)} blocks  ${fmtInt(res.popByPrecinct[0]).padStart(10)} people` : '')
+        + '</pre>';
       setStatus(`Exported ${fmtInt(res.rows)} block rows.`, 'ok');
     } catch (e) {
       out.innerHTML = `<p class="err">${e.message}</p>`;
     }
   };
+  btn.onclick = run;
 
   openModal('Block assignment CSV for Dave’s Redistricting', [
-    el('p', { html: 'One row for every one of the 31,925 Tarrant County 2020 Census blocks. Each block '
-      + 'takes its VTD’s precinct; blocks in a split VTD take their own assignment.' }),
+    el('p', { html: `Header <code>${DRA_HEADER}</code>, then one row per assigned 2020 Census block: `
+      + 'the 15-digit <code>GEOID20</code> and the precinct, 1–4. Each block takes its VTD’s precinct; '
+      + 'blocks in a split VTD take their own assignment.' }),
     el('p', { class: 'tight', html:
-      '<strong>On the format:</strong> DRA’s own documentation site is offline, so this could not be '
-      + 'confirmed from the vendor. The header below is what the <code>geomander</code> R package — the '
-      + 'most widely used reader and writer of DRA exports — requires: columns <code>GEOID20</code> and '
-      + '<code>District</code>, read as text, with a header row, comma separated. The 15-digit GEOID is '
-      + 'written unchanged. Other headers are offered in case DRA wants a different one.' }),
-    el('label', { class: 'fld' }, ['Header', sel]),
-    el('label', { class: 'fld' }, ['Write unassigned blocks as', unassignedSel]),
-    el('button', { class: 'primary', text: 'Download block CSV', onclick: run }),
+      'Unassigned blocks are left out of the file, not written as <code>0</code>: DRA builds its '
+      + 'districts from the labels it finds, so a <code>0</code> would become a fifth district. A block '
+      + 'missing from the file is unassigned in DRA.' }),
+    note,
     out,
   ]);
+
+  // Count what will be left out before the user clicks.
+  try {
+    const pre = await blockCSV(data, state);
+    if (pre.unassigned && note.isConnected) {
+      note.append(unassignedNote(`${fmtInt(pre.unassigned)} block${pre.unassigned === 1 ? '' : 's'} unassigned; `
+        + 'they will be unassigned in DRA too'));
+    }
+  } catch (e) { /* the download reports it */ }
 }
 
 const slug = (s) => (s || 'plan').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'plan';
