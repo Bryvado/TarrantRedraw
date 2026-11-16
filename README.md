@@ -129,8 +129,9 @@ the plan exactly.
 
 **Shading** is one mode at a time: assigned precinct, Democratic share on the composite /
 2026 / the 2020–24 baseline, the 2026 shift, and Hispanic, Black and nonwhite share of VAP.
-Drawn precinct outlines stay on top in every mode.
-**Shade by drawn precinct totals** (`T`) fills each drawn precinct with its own running total
+Drawn precinct outlines stay on top in every mode. Unassigned units are left clear, so the basemap shows
+through until they are drawn.
+**Precinct totals** (`T`) fills each drawn precinct with its own running total
 on the current measure instead of shading unit by unit, so the colour moves as each VTD or
 block is added. It works for the composite, 2026 and the three VAP shares; the baseline and
 the shift have no vote counts to total, so the option is greyed out there. Map 7, cities and communities are
@@ -148,7 +149,7 @@ with duplicate and delete.
 ### Colors
 
 - Partisan level: **red → off-white → blue** by default, centered at 50%, blue the Democratic
-  end. **Party colors** under Shading switches to brown / teal or orange / purple, which are
+  end. **Colors** under Shading switches to brown / teal or orange / purple, which are
   easier to tell apart with a color-vision deficiency. The choice is remembered per browser.
 - Change over time: purple `#762a83` → green `#1b7837`, centered at 0.
 - Demographic shares: one single-hue sequential ramp.

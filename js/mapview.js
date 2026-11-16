@@ -2,7 +2,7 @@
 // outlines on top, optional overlays, and the paint interactions.
 
 import {
-  PRECINCT, UNASSIGNED, NODATA, PARTISAN_PALETTES, DEFAULT_PARTISAN, SHIFT, SEQ, interpolateExpr,
+  PRECINCT, NODATA, PARTISAN_PALETTES, DEFAULT_PARTISAN, SHIFT, SEQ, interpolateExpr,
 } from './colors.js';
 import { dissolveLines } from './topology.js';
 import { debounceFrame } from './util.js';
@@ -30,10 +30,14 @@ export function setPartisanPalette(name) {
   return pal;
 }
 
+// Unassigned units are left clear so the basemap shows through. A transparent
+// colour, not zero opacity, keeps them clickable.
+const CLEAR = 'rgba(0,0,0,0)';
+
 const districtColorExpr = () => [
   'match', ['to-string', ['feature-state', 'd']],
   '1', PRECINCT[0], '2', PRECINCT[1], '3', PRECINCT[2], '4', PRECINCT[3],
-  UNASSIGNED,
+  CLEAR,
 ];
 
 function fillColorExpr(mode) {
@@ -110,7 +114,7 @@ export class MapView {
       id: 'vtd-line', type: 'line', source: 'vtd',
       paint: {
         'line-color': '#1c1e22',
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 8.5, 0.12, 11, 0.3],
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 8.5, 0.28, 11, 0.45],
         'line-width': 0.5,
       },
     }, firstSymbol);
@@ -121,7 +125,7 @@ export class MapView {
     }, firstSymbol);
     m.addLayer({
       id: 'blocks-line', type: 'line', source: 'blocks',
-      paint: { 'line-color': '#f5f5f5', 'line-width': 0.4, 'line-opacity': 0.5 },
+      paint: { 'line-color': '#1c1e22', 'line-width': 0.4, 'line-opacity': 0.45 },
     }, firstSymbol);
 
     // Overlays, hidden until toggled.
@@ -220,7 +224,7 @@ export class MapView {
     const agg = mode !== 'district' && this.aggColors
       ? ['match', ['to-string', ['feature-state', 'd']],
         '1', this.aggColors[1], '2', this.aggColors[2], '3', this.aggColors[3], '4', this.aggColors[4],
-        UNASSIGNED]
+        CLEAR]
       : null;
     this.map.setPaintProperty('vtd-fill', 'fill-color', agg || fillColorExpr(mode));
     const base = mode === 'district' ? 0.72 : (this.dimUnder ? 0.45 : 0.8);
