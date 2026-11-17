@@ -16,7 +16,9 @@ library(mapgl)
 library(patchwork)
 
 options(tigris_use_cache = TRUE)
-
+PACK_STARTS <- 5                                # short-burst runs, each from a different top sampled pack plan
+PACK_BURSTS <- 1500                             # bursts per run (was 400)
+PACK_SPLITW <- 0.002                            # charge per split city; 0 gives the pure partisan ceiling
 # ---- Output handling ----
 # The script runs as two stored blocks. Nothing is shown while a block runs: every table, printed line and
 # plot is collected and released together at the end. If a step fails, everything collected so far is
@@ -370,17 +372,24 @@ PART_A <- quote({
   if (file.exists(f_sb)) {
     cc_pack <- readRDS(f_sb)
   } else {
-    init  <- get_plans_matrix(plans_pack)[, which.max(pack_tab$third)]
+    pm_pk <- get_plans_matrix(plans_pack)
     # redist's scorer_splits() crashes R on this map; count split cities in R instead
     city_id <- map$city_all
     s_split <- structure(function(plans) apply(as.matrix(plans), 2, \(a) sum(tapply(a, city_id, n_distinct) > 1)),
                          class = c("redist_scorer", "function"))
-    score <- scorer_group_pct(map, ndv, two_party, k = 3) - 0.002 * s_split
+    score    <- scorer_group_pct(map, ndv, two_party, k = 3) - PACK_SPLITW * s_split
+    third_of <- function(a) sort(tapply(map$ndv, a, sum) / tapply(map$two_party, a, sum))[2]
+    starts   <- order(pack_tab$third, decreasing = TRUE)[seq_len(PACK_STARTS)]
     set.seed(439)
-    sb <- redist_shortburst(map, score, init_plan = init, burst_size = 10, max_bursts = 400,
-                            maximize = TRUE, verbose = FALSE)
-    sb_m    <- get_plans_matrix(sb)
-    cc_pack <- as.integer(sb_m[, ncol(sb_m)])
+    cand <- lapply(starts, function(j) {
+      sb   <- redist_shortburst(map, score, init_plan = pm_pk[, j], burst_size = 10, max_bursts = PACK_BURSTS,
+                                maximize = TRUE, verbose = FALSE)
+      sb_m <- get_plans_matrix(sb)
+      as.integer(sb_m[, ncol(sb_m)])
+    })
+    res <- sapply(cand, third_of)
+    message("Third D precinct by start: ", paste(sprintf("%.1f%%", 100 * res), collapse = ", "))
+    cc_pack <- cand[[which.max(res)]]
     saveRDS(cc_pack, f_sb)
   }
   stopifnot(length(cc_pack) == nrow(map), setequal(unique(cc_pack), 1:4))
