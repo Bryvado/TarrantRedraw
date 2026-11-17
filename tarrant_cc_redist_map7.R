@@ -61,7 +61,12 @@ PART_A <- quote({
   N_PER_RUN    <- 100000                          # plans per independent SMC run (one batch)
   N_RUNS       <- 20                              # batches; total sampled plans = N_PER_RUN * N_RUNS
   KEEP_PER_RUN <- 250                             # full plans kept from each batch for the gallery maps
-  ENS_TAG      <- "v1"                            # change this whenever the map, tolerance or constraints change
+  USE_CITY_SPLITS <- FALSE                         # FALSE: city lines play no part in drawing any plan
+  USE_COI_SPLITS  <- FALSE                         # FALSE: communities of interest play no part in drawing any plan
+  # Every checkpoint below is named for these two switches, so turning one off draws fresh plans
+  # and switching back reuses the earlier ones. Both TRUE keeps the original file names.
+  SPLIT_TAG    <- paste0(if (!USE_CITY_SPLITS) "_nocity", if (!USE_COI_SPLITS) "_nocoi")
+  ENS_TAG      <- paste0("v1", SPLIT_TAG)         # change "v1" whenever the map, tolerance or constraint strengths change
   PACK_STARTS  <- 5                               # short-burst runs, each from a different start
   PACK_BURSTS  <- 1500                            # bursts per run
   PACK_SPLITW  <- 0.002                           # charge per split city; 0 gives the pure partisan ceiling
@@ -342,12 +347,15 @@ PART_A <- quote({
   map <- redist_map(tar_sf, ndists = 4, pop_tol = 0.05, total_pop = pop)
   
   # ---- 4. Split penalties by level ----
-  cons <- redist_constr(map) |>
+  cons <- redist_constr(map)
+  if (USE_CITY_SPLITS) cons <- cons |>
     add_constr_splits(strength = 0.75, admin = city_std) |>
     add_constr_multisplits(strength = 4.0, admin = city_std) |>
     add_constr_multisplits(strength = 1.5, admin = city_irr) |>
-    add_constr_total_splits(strength = 0.3, admin = city_fw) |>
-    add_constr_splits(strength = 0.3, admin = comm)
+    add_constr_total_splits(strength = 0.3, admin = city_fw)
+  if (USE_COI_SPLITS) cons <- cons |> add_constr_splits(strength = 0.3, admin = comm)
+  SPLIT_W <- PACK_SPLITW * USE_CITY_SPLITS        # short-burst charge per split city (0 when city splits are off)
+  cat("Split rules | cities:", USE_CITY_SPLITS, "| communities:", USE_COI_SPLITS, "| checkpoint tag:", ENS_TAG, "\n")
   
   # ---- 4b. Republican-pack ensemble and one optimized pack plan (checkpointed) ----
   # The hinge penalty takes a square root of each precinct's shortfall below D_TGT, so the sampler
@@ -355,7 +363,7 @@ PART_A <- quote({
   cons_pack <- cons |>
     add_constr_grp_hinge(strength = 25, group_pop = ndv, total_pop = two_party, tgts_group = D_TGT)
   
-  f_pk <- file.path(DIR, "tarrant_cc_smc_rpack.rds")
+  f_pk <- file.path(DIR, paste0("tarrant_cc_smc_rpack", SPLIT_TAG, ".rds"))
   if (file.exists(f_pk)) {
     plans_pack <- readRDS(f_pk)
   } else {
@@ -374,7 +382,7 @@ PART_A <- quote({
   
   # Start from the sampled pack plan with the strongest third D precinct, then push further with short bursts.
   # Score: third-highest Democratic share, minus a small charge per split city.
-  f_sb <- file.path(DIR, "tarrant_cc_rpack_plan.rds")
+  f_sb <- file.path(DIR, paste0("tarrant_cc_rpack_plan", SPLIT_TAG, ".rds"))
   if (file.exists(f_sb)) {
     cc_pack <- readRDS(f_sb)
   } else {
@@ -383,7 +391,7 @@ PART_A <- quote({
     city_id <- map$city_all
     s_split <- structure(function(plans) apply(as.matrix(plans), 2, \(a) sum(tapply(a, city_id, n_distinct) > 1)),
                          class = c("redist_scorer", "function"))
-    score    <- scorer_group_pct(map, ndv, two_party, k = 3) - PACK_SPLITW * s_split
+    score    <- scorer_group_pct(map, ndv, two_party, k = 3) - SPLIT_W * s_split
     third_of <- function(a) sort(tapply(map$ndv, a, sum) / tapply(map$two_party, a, sum))[2]
     starts   <- order(pack_tab$third, decreasing = TRUE)[seq_len(PACK_STARTS)]
     set.seed(439)
@@ -401,7 +409,7 @@ PART_A <- quote({
   stopifnot(length(cc_pack) == nrow(map), setequal(unique(cc_pack), 1:4))
   
   # ---- 4c. Swing plan: one capped R precinct, one flippable precinct, two packed D precincts (checkpointed) ----
-  f_sw <- file.path(DIR, "tarrant_cc_swing_plan.rds")
+  f_sw <- file.path(DIR, paste0("tarrant_cc_swing_plan", SPLIT_TAG, ".rds"))
   if (file.exists(f_sw)) {
     cc_swing <- readRDS(f_sw)
   } else {
@@ -411,7 +419,7 @@ PART_A <- quote({
     }
     city_id  <- map$city_all
     sw_score <- structure(function(plans) apply(as.matrix(plans), 2, \(a)
-                                                -sw_pen(a) - PACK_SPLITW * sum(tapply(a, city_id, n_distinct) > 1)),
+                                                -sw_pen(a) - SPLIT_W * sum(tapply(a, city_id, n_distinct) > 1)),
                           class = c("redist_scorer", "function"))
     pm_pk  <- get_plans_matrix(plans_pack)
     starts <- cbind(map$cc_map7, pm_pk[, order(apply(pm_pk, 2, sw_pen))[seq_len(PACK_STARTS - 1)]])
@@ -551,10 +559,10 @@ PART_B <- quote({
     summarise(across(-batch, list(min = min, max = max))) |> print(width = Inf)
   
   # ---- 5b. Reference plans: same metrics, computed once ----
-  refs   <- c("Map 7", if (HAS_PRE) "pre-2025", "R-pack")
+  refs   <- c("Map 7", if (HAS_PRE) "pre-2025", "R-pack", "Swing")
   ref_pl <- add_reference(plans_pack, map$cc_map7, "Map 7")
   if (HAS_PRE) ref_pl <- add_reference(ref_pl, map$cc_pre2025, "pre-2025")
-  ref_pl <- add_reference(ref_pl, cc_pack, "R-pack") |> subset_ref() |> add_metrics()
+  ref_pl <- add_reference(ref_pl, cc_pack, "R-pack") |> add_reference(cc_swing, "Swing") |> subset_ref() |> add_metrics()
   refd <- ref_pl |> as_tibble() |> mutate(draw = as.character(draw)) |>
     group_by(draw) |> mutate(rank = rank(dem, ties.method = "first")) |> ungroup()
   stopifnot(setequal(unique(refd$draw), refs))
