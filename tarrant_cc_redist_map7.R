@@ -1,7 +1,8 @@
 # SCRIPT: tarrant_cc_redist_map7.R
 # SMC ensemble of Tarrant County commissioner precincts (4) on TLC 2024 VTDs
-# Reference plans: 2025 Map 7 (Tarrant7_clean.geojson), optional pre-2025 plan,
-#   and "R-pack": an optimized plan packing Republicans into one precinct (section 4b)
+# Reference plans (PLANS, section 4d): 2025 Map 7, "R-pack" (Republicans packed into one precinct, 4b),
+#   "Swing" (one R precinct, one flippable, two packed D, 4c) and an optional pre-2025 plan.
+#   Every chart and map shows all of them together; nothing is drawn for Map 7 alone.
 # Partisanship baseline: time-decayed composite of 2020, 2022, 2024 and 2026 top-of-ticket races.
 # 2026 commissioner results (CC_*) are plotted only and never enter the baseline.
 # 2026 Senate + Governor votes are also kept on their own (ndv26/nrv26) to show what 2026 looks like on any plan.
@@ -403,14 +404,10 @@ PART_A <- quote({
     message("Third D precinct by start: ", paste(sprintf("%.1f%%", 100 * res), collapse = ", "))
     cc_pack <- cand[[which.max(res)]]
     
-    # refine: faster non-reversible merge-split at lower compactness, then single-VTD flips along the borders
+    # refine with merge-split only: whole-border redraws keep shapes clean (single-VTD flips grew tendrils)
     ref1 <- last_plan(redist_shortburst(map, score, init_plan = cc_pack, burst_size = 10, max_bursts = PACK_BURSTS,
-                                        reversible = FALSE, fixed_k = 1, compactness = 0.5, verbose = FALSE))
+                                        reversible = FALSE, fixed_k = 1, compactness = 1, verbose = FALSE))
     if (third_of(ref1) > third_of(cc_pack)) cc_pack <- ref1
-    ref2 <- last_plan(redist_shortburst(map, score, init_plan = cc_pack, backend = "flip", burst_size = 50,
-                                        max_bursts = 2 * PACK_BURSTS, verbose = FALSE))
-    ok2 <- max(abs(tapply(map$pop, ref2, sum) / (sum(map$pop) / 4) - 1)) <= 0.05
-    if (ok2 && third_of(ref2) > third_of(cc_pack)) cc_pack <- ref2
     message(sprintf("After refinement: third D precinct %.1f%% (ceiling 60.7%%)", 100 * third_of(cc_pack)))
     saveRDS(cc_pack, f_sb)
   }
@@ -445,6 +442,11 @@ PART_A <- quote({
   }
   print(sort(round(tapply(map$ndv, cc_swing, sum) / tapply(map$two_party, cc_swing, sum), 3)))
   stopifnot(length(cc_swing) == nrow(map), setequal(unique(cc_swing), 1:4))
+  
+  # ---- 4d. The plans every script compares (tarrant_cc_planscore.R and tarrant_redraw_export.R read these) ----
+  PLANS <- c(list("Map 7" = tar_sf$cc_map7, "R-pack" = cc_pack, "Swing" = cc_swing),
+             if (HAS_PRE) list("Pre-2025" = tar_sf$cc_pre2025))
+  PCOL  <- c("Map 7" = "#21908c", "R-pack" = "#3b0f70", "Swing" = "#e08214", "Pre-2025" = "#7f7f7f")[names(PLANS)]
 })
 run_stored(PART_A)
 # ==== END DATA BUILD ==== (tarrant_redraw_export.R runs the script down to this line)
@@ -566,16 +568,14 @@ PART_B <- quote({
     summarise(d3_plus = mean(dem_seats >= 3), med_third = median(third), med_city_splits = median(city_splits)) |>
     summarise(across(-batch, list(min = min, max = max))) |> print(width = Inf)
   
-  # ---- 5b. Reference plans: same metrics, computed once ----
-  refs   <- c("Map 7", if (HAS_PRE) "pre-2025", "R-pack", "Swing")
-  ref_pl <- add_reference(plans_pack, map$cc_map7, "Map 7")
-  if (HAS_PRE) ref_pl <- add_reference(ref_pl, map$cc_pre2025, "pre-2025")
-  ref_pl <- add_reference(ref_pl, cc_pack, "R-pack") |> add_reference(cc_swing, "Swing") |> subset_ref() |> add_metrics()
-  refd <- ref_pl |> as_tibble() |> mutate(draw = as.character(draw)) |>
-    group_by(draw) |> mutate(rank = rank(dem, ties.method = "first")) |> ungroup()
-  stopifnot(setequal(unique(refd$draw), refs))
+  # ---- 5b. Every plan measured the same way ----
+  ref_pl <- plans_pack
+  for (nm in names(PLANS)) ref_pl <- add_reference(ref_pl, PLANS[[nm]], nm)
+  ref_pl <- ref_pl |> subset_ref() |> add_metrics()
+  refd <- ref_pl |> as_tibble() |> mutate(plan = factor(as.character(draw), levels = names(PLANS)))
+  stopifnot(!anyNA(refd$plan))
   
-  # reference-plan precinct stats straight from the VTD table, so precinct numbers are the real ones
+  # precinct stats straight from the VTD table, so precinct numbers are the real ones
   plan_stats <- function(assign) {
     tar_sf |> st_drop_geometry() |> mutate(district = as.integer(assign)) |>
       group_by(district) |>
@@ -587,42 +587,47 @@ PART_B <- quote({
                 .groups = "drop") |>
       mutate(rank = rank(dem, ties.method = "first"), rank26 = rank(sen26, ties.method = "first"))
   }
-  m7    <- plan_stats(tar_sf$cc_map7) |> left_join(mutate(cc26, district = as.integer(district)), by = "district")
-  m7_26 <- filter(m7, !is.na(dem26))
-  pre   <- if (HAS_PRE) plan_stats(tar_sf$cc_pre2025)
-  rp    <- plan_stats(cc_pack)
-  print(m7)
-  print(rp)
+  OFFX <- setNames(seq(-0.27, 0.27, length.out = length(PLANS)), names(PLANS))   # side-by-side offset per plan
+  pst <- imap_dfr(PLANS, \(a, nm) plan_stats(a) |> mutate(plan = nm)) |>
+    left_join(cc26 |> transmute(plan = "Map 7", district = as.integer(district), dem26), by = c("plan", "district")) |>
+    mutate(rx = rank + unname(OFFX[plan]), rx26 = rank26 + unname(OFFX[plan]), shift = sen26 - dem_pre,
+           plan = factor(plan, levels = names(PLANS)))
+  print(pst |> select(plan, district, pop, dem, sen26, dem_pre, hisp_vap, black_vap, nonwhite_vap), n = Inf)
   
-  # R-pack vs Map 7 side by side: population, partisanship, compactness, splits
-  refd |> group_by(draw) |>
-    summarise(dem_seats = sum(dem > 0.5), max_dev = max(dev), min_polsby = min(polsby),
-              city_splits = first(city_splits), comm_splits = first(comm_splits)) |> print()
+  plan_sum <- refd |> group_by(plan) |>
+    summarise(dem_seats = sum(dem > 0.5), seats26 = sum(sen26 > 0.5), mm_seats = sum(nonwhite_vap > 0.5),
+              max_dev = max(dev), min_polsby = min(polsby), city_splits = first(city_splits),
+              city_multi = first(city_multi), comm_splits = first(comm_splits))
+  print(plan_sum)
   
   count(seats, dem_seats) |> mutate(share = n / sum(n))
-  count(seats, mm_seats)  |> mutate(share = n / sum(n))
+  count(seats, seats26)   |> mutate(share = n / sum(n))
   seats |> summarise(across(c(dev, min_polsby, city_splits, comm_splits), median))
-  cat("Map 7: D-leaning", sum(m7$dem > 0.5), "| majority-nonwhite-VAP", sum(m7$nonwhite_vap > 0.5), "\n")
   
-  # ---- 6. Charts ----
-  ACC <- "#21908c"                                 # Map 7
-  PK  <- "#3b0f70"                                 # R-pack
+  # ---- 6. Charts: sampled plans in grey, every reference plan in its own colour ----
   DEM <- "#2166ac"                                 # partisan metrics only
   REP <- "#b2182b"
+  COLS <- scale_colour_manual(values = PCOL, name = NULL)
   pct <- scales::label_percent(accuracy = 1)
   theme_cc <- theme_minimal(base_size = 11) +
     theme(panel.grid.minor = element_blank(), panel.grid.major.x = element_blank(),
           plot.title = element_text(face = "bold"), plot.title.position = "plot",
-          plot.subtitle = element_text(colour = "grey30"), strip.text = element_text(face = "bold"))
+          plot.subtitle = element_text(colour = "grey30"), strip.text = element_text(face = "bold"),
+          legend.position = "top", legend.justification = "left")
   q5 <- function(x) tibble(q05 = quantile(x, 0.05), q25 = quantile(x, 0.25), med = median(x),
                            q75 = quantile(x, 0.75), q95 = quantile(x, 0.95))
   intervals <- list(
     geom_linerange(aes(rank, ymin = q05, ymax = q95), linewidth = 1.2, colour = "grey78"),
     geom_linerange(aes(rank, ymin = q25, ymax = q75), linewidth = 6, colour = "grey60"),
     geom_point(aes(rank, med), shape = 95, size = 9, colour = "grey15"))
+  plan_marks <- function(d, x, y) list(
+    geom_line(data = d, aes(.data[[x]], .data[[y]], colour = plan), linewidth = 0.8),
+    geom_point(data = d, aes(.data[[x]], .data[[y]], colour = plan), size = 2.6),
+    geom_text(data = d, aes(.data[[x]], .data[[y]], label = pct(.data[[y]]), colour = plan),
+              vjust = -1, size = 2.7, show.legend = FALSE))
   
-  # Final results under any plot that shows a race: the total, then each district (or piece), for each race
-  dist_bar <- function(yrs, plans, keep = rep(TRUE, nrow(tar_sf))) {
+  # Results under any plot that shows a race: the total, then each precinct, for each plan and race
+  dist_bar <- function(yrs, plans = PLANS, keep = rep(TRUE, nrow(tar_sf))) {
     keys <- tar_sf$vtdkey[keep]
     x <- imap_dfr(plans, \(a, nm) {
       cl <- contest_long |> filter(year %in% yrs, vtdkey %in% keys) |>
@@ -645,57 +650,33 @@ PART_B <- quote({
       geom_text(aes(x = 0.97, label = sprintf("R %.0f", 100 * (1 - d))), hjust = 1, colour = "white", size = 2.7) +
       scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.8), guide = "none") +
       scale_x_continuous(expand = c(0, 0)) +
-      (if (length(plans) > 1) facet_grid(race ~ plan) else facet_wrap(~race, nrow = 1)) +
+      (if (length(plans) > 1) facet_grid(plan ~ race) else facet_wrap(~race, nrow = 1)) +
       theme_void(base_size = 9) +
       theme(strip.text = element_text(face = "bold", size = 8, margin = margin(2, 2, 2, 2)),
             panel.spacing = unit(0.6, "lines"))
   }
-  with_totals <- function(p, yrs, plans = list("Map 7" = tar_sf$cc_map7)) {
-    rows <- if (length(plans) > 1) n_distinct(paste(contest_long$year, contest_long$office)[contest_long$year %in% yrs]) else 1
-    p / dist_bar(yrs, plans) + plot_layout(heights = c(1, 0.32 * rows))
-  }
-  REF_PLANS <- list("Map 7" = tar_sf$cc_map7, "R-pack" = cc_pack)
+  with_totals <- function(p, yrs, plans = PLANS) p / dist_bar(yrs, plans) + plot_layout(heights = c(1, 0.3 * length(plans)))
   
-  # 6a. Partisanship by rank
-  band <- ens |> group_by(rank) |> summarise(q5(dem))
-  m7_seats <- sum(m7$dem > 0.5)
-  RANK_X <- scale_x_continuous(breaks = 1:4, limits = c(0.5, 4.9),
-                               labels = c("Least D", "2nd", "3rd", "Most D"))
-  
-  p_rank <- ggplot(band) +
+  # 6a. Democratic share by precinct rank
+  RANK_X <- scale_x_continuous(breaks = 1:4, limits = c(0.5, 4.5), labels = c("Least D", "2nd", "3rd", "Most D"))
+  ggplot(ens |> group_by(rank) |> summarise(q5(dem))) +
     geom_hline(yintercept = 0.5, linetype = 2, colour = "grey50") +
-    intervals +
-    geom_line(data = rp, aes(rank, dem), colour = PK, linewidth = 0.8, linetype = 2) +
-    geom_point(data = rp, aes(rank, dem), colour = PK, shape = 15, size = 2.8) +
-    geom_text(data = rp, aes(rank, dem, label = pct(dem)), nudge_x = 0.24, colour = PK, size = 3) +
-    geom_line(data = m7, aes(rank, dem), colour = ACC, linewidth = 0.8) +
-    geom_point(data = m7, aes(rank, dem), colour = ACC, size = 3) +
-    geom_text(data = m7, aes(rank, dem, label = paste0("Pct ", district)),
-              nudge_x = -0.24, colour = ACC, size = 3.3, fontface = "bold") +
-    geom_segment(data = m7_26, aes(x = rank + 0.14, xend = rank + 0.14, y = dem, yend = dem26),
-                 arrow = arrow(length = unit(0.08, "in")), colour = "grey10") +
-    geom_text(data = m7_26, aes(rank + 0.2, dem26, label = paste0("2026: ", pct(dem26))),
-              hjust = 0, size = 3, colour = "grey10") +
-    RANK_X + scale_y_continuous(labels = pct) +
-    labs(x = NULL, y = "Dem. share",
-         title = "Democratic share by precinct",
-         subtitle = sprintf("Grey: %s sampled plans. Teal: Map 7. Purple: R-pack.", format(n_plans, big.mark = ",", scientific = FALSE))) +
+    intervals + plan_marks(pst, "rx", "dem") + COLS + RANK_X + scale_y_continuous(labels = pct) +
+    labs(x = NULL, y = "Dem. share", title = "Democratic share by precinct",
+         subtitle = sprintf("Grey: %s sampled plans", format(n_plans, big.mark = ",", scientific = FALSE))) +
     theme_cc
-  if (HAS_PRE) p_rank <- p_rank +
-    geom_line(data = pre, aes(rank, dem), colour = "grey20", linewidth = 0.6, linetype = 3) +
-    geom_point(data = pre, aes(rank, dem), colour = "grey20", shape = 1, size = 2.5) +
-    labs(caption = "Dotted: pre-2025")
-  p_rank
   
-  # 6b. Democratic-leaning precincts per sampled plan
+  # 6b. Democratic-leaning precincts per sampled plan, with each reference plan marked on its bar
+  seat_lab <- plan_sum |> group_by(dem_seats) |> summarise(who = paste(plan, collapse = "\n"))
   seats |> count(dem_seats) |> complete(dem_seats = 0:4, fill = list(n = 0)) |>
-    mutate(p = n / sum(n), is_m7 = dem_seats == m7_seats,
-           lab = paste0(if_else(p > 0, scales::label_percent(accuracy = 0.1)(p), ""), if_else(is_m7, "\nMap 7", ""))) |>
-    ggplot(aes(dem_seats, p, fill = is_m7)) +
+    mutate(p = n / sum(n)) |> left_join(seat_lab, by = "dem_seats") |>
+    mutate(lab = paste0(if_else(p > 0, scales::label_percent(accuracy = 0.1)(p), ""),
+                        if_else(is.na(who), "", paste0("\n", who)))) |>
+    ggplot(aes(dem_seats, p, fill = !is.na(who))) +
     geom_col(width = 0.7) +
-    geom_text(aes(label = lab), vjust = -0.3, size = 3.3, lineheight = 0.9) +
-    scale_fill_manual(values = c(`TRUE` = ACC, `FALSE` = "grey70"), guide = "none") +
-    scale_y_continuous(labels = pct, expand = expansion(mult = c(0, 0.18))) +
+    geom_text(aes(label = lab), vjust = -0.2, size = 3.1, lineheight = 0.9) +
+    scale_fill_manual(values = c(`TRUE` = "grey45", `FALSE` = "grey75"), guide = "none") +
+    scale_y_continuous(labels = pct, expand = expansion(mult = c(0, 0.3))) +
     labs(x = "D-leaning precincts of 4", y = NULL, title = "D-leaning precincts per sampled plan") +
     theme_cc
   
@@ -709,14 +690,14 @@ PART_B <- quote({
     ggplot(aes(dem, fill = set)) +
     geom_density(alpha = 0.55, colour = NA) +
     geom_vline(xintercept = 0.5, linetype = 2, colour = "grey40") +
-    geom_vline(data = tibble(precinct = c("3rd most D precinct", "Least D precinct"),
-                             dem = c(sort(rp$dem)[2], min(rp$dem))),
-               aes(xintercept = dem), colour = PK, linewidth = 1) +
+    geom_vline(data = pst |> filter(rank %in% 1:2) |>
+                 mutate(precinct = if_else(rank == 2, "3rd most D precinct", "Least D precinct")),
+               aes(xintercept = dem, colour = plan), linewidth = 1) +
     facet_wrap(~precinct, scales = "free_y") +
-    scale_fill_manual(values = c("Neutral" = "grey60", "R-pack" = "#8c6bb1"), name = NULL) +
+    scale_fill_manual(values = c("Neutral" = "grey60", "R-pack" = "#8c6bb1"), name = NULL) + COLS +
     scale_x_continuous(labels = pct) +
-    labs(x = "Dem. share", y = NULL, title = "Neutral vs. R-pack ensembles", subtitle = "Line: R-pack plan") +
-    theme_cc + theme(legend.position = "bottom", axis.text.y = element_blank())
+    labs(x = "Dem. share", y = NULL, title = "Neutral vs. R-pack ensembles", subtitle = "Lines: reference plans") +
+    theme_cc + theme(axis.text.y = element_blank())
   
   # 6c. Minority voting-age share by rank
   VLAB <- c(nonwhite_vap = "Nonwhite VAP", hisp_vap = "Hispanic VAP", black_vap = "Black VAP")
@@ -724,23 +705,18 @@ PART_B <- quote({
     tibble(measure = factor(VLAB[[v]], levels = VLAB), rank = rank4(ens[[v]]), share = ens[[v]]) |>
       group_by(measure, rank) |> summarise(q5(share), .groups = "drop")
   })
-  m7_v <- m7 |> select(district, all_of(names(VLAB))) |>
-    pivot_longer(-district, names_to = "measure", values_to = "share") |>
+  pst_v <- pst |> select(plan, district, all_of(names(VLAB))) |>
+    pivot_longer(all_of(names(VLAB)), names_to = "measure", values_to = "share") |>
     mutate(measure = factor(VLAB[measure], levels = VLAB)) |>
-    group_by(measure) |> mutate(rank = rank(share, ties.method = "first")) |> ungroup()
-  
+    group_by(plan, measure) |>
+    mutate(rx = rank(share, ties.method = "first") + unname(OFFX[as.character(plan)])) |> ungroup()
   ggplot(band_v) +
     geom_hline(yintercept = 0.5, linetype = 2, colour = "grey50") +
-    intervals +
-    geom_line(data = m7_v, aes(rank, share), colour = ACC, linewidth = 0.8) +
-    geom_point(data = m7_v, aes(rank, share), colour = ACC, size = 2.5) +
-    geom_text(data = m7_v, aes(rank, share, label = paste0("Pct ", district)),
-              nudge_x = -0.3, colour = ACC, size = 2.9, fontface = "bold") +
+    intervals + plan_marks(pst_v, "rx", "share") + COLS +
     facet_wrap(~measure) +
-    scale_x_continuous(breaks = 1:4, limits = c(0.4, 4.4), labels = c("Lowest", "2nd", "3rd", "Highest")) +
+    scale_x_continuous(breaks = 1:4, limits = c(0.5, 4.5), labels = c("Lowest", "2nd", "3rd", "Highest")) +
     scale_y_continuous(labels = pct) +
-    labs(x = NULL, y = NULL, title = "Minority voting-age share by precinct",
-         subtitle = "Grey: sampled plans. Teal: Map 7.") +
+    labs(x = NULL, y = NULL, title = "Minority voting-age share by precinct", subtitle = "Grey: sampled plans") +
     theme_cc
   
   # 6d. Split counts
@@ -749,64 +725,58 @@ PART_B <- quote({
   sp_ens <- seats |> select(all_of(names(SLAB))) |>
     pivot_longer(everything(), names_to = "measure", values_to = "n") |>
     count(measure, n, name = "plans") |> sp_lab()
-  sp_m7 <- refd |> filter(draw == "Map 7") |> distinct(across(all_of(names(SLAB)))) |>
-    pivot_longer(everything(), names_to = "measure", values_to = "n") |> sp_lab()
+  sp_ref <- plan_sum |> select(plan, all_of(names(SLAB))) |>
+    pivot_longer(-plan, names_to = "measure", values_to = "n") |> sp_lab()
   ggplot(sp_ens, aes(n, plans)) +
-    geom_col(fill = "grey70") +
-    geom_vline(data = sp_m7, aes(xintercept = n), colour = ACC, linewidth = 1.2) +
+    geom_col(fill = "grey75") +
+    geom_vline(data = sp_ref, aes(xintercept = n, colour = plan), linewidth = 1.1) + COLS +
     facet_wrap(~measure, scales = "free") +
     scale_y_continuous(labels = scales::label_comma()) +
-    labs(x = NULL, y = "Sampled plans", title = "Splits per plan", subtitle = "Line: Map 7") +
+    labs(x = NULL, y = "Sampled plans", title = "Splits per plan") +
     theme_cc
   
   # 6e. 2026 votes on each plan
-  band26 <- ens |> group_by(rank = rank26) |> summarise(q5(sen26))
-  ref26 <- bind_rows(mutate(m7, plan = "Map 7"), mutate(rp, plan = "R-pack")) |>
-    mutate(lx = rank26 + if_else(plan == "Map 7", -0.27, 0.27), shift = sen26 - dem_pre,
-           lab = paste0("Pct ", district))
-  count(seats, seats26) |> mutate(share = n / sum(n))
-  ref26 |> select(plan, district, baseline_2020_24 = dem_pre, composite = dem, y2026 = sen26, shift) |> print()
-  
   with_totals(
-    ggplot(band26) +
+    ggplot(ens |> group_by(rank = rank26) |> summarise(q5(sen26))) +
       geom_hline(yintercept = 0.5, linetype = 2, colour = "grey50") +
-      intervals +
-      geom_line(data = ref26, aes(rank26, sen26, colour = plan, linetype = plan), linewidth = 0.8) +
-      geom_point(data = ref26, aes(rank26, sen26, colour = plan, shape = plan), size = 2.8) +
-      geom_text(data = ref26, aes(lx, sen26, label = pct(sen26), colour = plan), size = 3, show.legend = FALSE) +
-      scale_colour_manual(values = c("Map 7" = ACC, "R-pack" = PK), name = NULL) +
-      scale_linetype_manual(values = c("Map 7" = 1, "R-pack" = 2), name = NULL) +
-      scale_shape_manual(values = c("Map 7" = 16, "R-pack" = 15), name = NULL) +
-      scale_x_continuous(breaks = 1:4, limits = c(0.5, 4.5), labels = c("Least D", "2nd", "3rd", "Most D")) +
-      scale_y_continuous(labels = pct) +
+      intervals + plan_marks(pst, "rx26", "sen26") + COLS + RANK_X + scale_y_continuous(labels = pct) +
       labs(x = NULL, y = "2026 Dem. share", title = "2026 vote by precinct", subtitle = "Grey: sampled plans") +
-      theme_cc + theme(legend.position = "top", legend.justification = "left"),
-    2026, REF_PLANS)
+      theme_cc,
+    2026)
   
-  # 6f. Shift to 2026 inside each precinct of Map 7 and the R-pack plan
-  with_totals(
-    ggplot(ref26, aes(y = fct_rev(lab))) +
-      geom_vline(xintercept = 0.5, linetype = 2, colour = "grey50") +
-      geom_segment(aes(x = dem_pre, xend = sen26, yend = fct_rev(lab)), colour = "grey20", linewidth = 0.8,
-                   arrow = arrow(length = unit(0.08, "in"))) +
-      geom_point(aes(x = dem_pre), shape = 21, fill = "white", colour = "grey20", size = 2.6) +
-      geom_text(aes(x = sen26, label = sprintf("%s (%+.1f)", pct(sen26), 100 * shift),
-                    hjust = if_else(shift >= 0, -0.12, 1.12)), size = 3) +
-      geom_point(data = filter(ref26, !is.na(dem26)), aes(x = dem26), shape = 5, size = 3, stroke = 1.1, colour = ACC) +
-      facet_wrap(~plan) +
-      scale_x_continuous(labels = pct, expand = expansion(mult = c(0.06, 0.22))) +
-      labs(x = "Dem. share", y = NULL, title = "2020-24 to 2026",
-           subtitle = "Diamond: 2026 commissioner result") +
-      theme_cc + theme(panel.grid.major.y = element_blank(), panel.grid.major.x = element_line(colour = "grey90")),
-    2026, REF_PLANS)
+  # 6f. Shift to 2026 inside each precinct of every plan
+  ggplot(pst, aes(y = fct_rev(paste("Pct", district)))) +
+    geom_vline(xintercept = 0.5, linetype = 2, colour = "grey50") +
+    geom_segment(aes(x = dem_pre, xend = sen26, yend = fct_rev(paste("Pct", district))), colour = "grey20",
+                 linewidth = 0.8, arrow = arrow(length = unit(0.08, "in"))) +
+    geom_point(aes(x = dem_pre), shape = 21, fill = "white", colour = "grey20", size = 2.6) +
+    geom_text(aes(x = sen26, label = sprintf("%s (%+.1f)", pct(sen26), 100 * shift)), hjust = -0.12, size = 3) +
+    geom_point(data = filter(pst, !is.na(dem26)), aes(x = dem26), shape = 5, size = 3, stroke = 1.1, colour = "grey20") +
+    facet_wrap(~plan) +
+    scale_x_continuous(labels = pct, expand = expansion(mult = c(0.06, 0.3))) +
+    labs(x = "Dem. share", y = NULL, title = "2020-24 to 2026", subtitle = "Diamond: 2026 commissioner result") +
+    theme_cc + theme(panel.grid.major.y = element_blank(), panel.grid.major.x = element_line(colour = "grey90"))
   
-  # ---- 7. Static maps ----
+  # ---- 7. Static maps: one panel per plan, same shading, same scale ----
   DCOL <- c("1" = "#1b9e77", "2" = "#e6ab02", "3" = "#7570b3", "4" = "#666666")   # used by section 8
-  vtd   <- tar_sf |> st_transform(2276)
-  m7_ln <- map7_sf |> st_transform(2276) |> mutate(PRECINCT = as.integer(PRECINCT)) |>
-    left_join(m7, by = c("PRECINCT" = "district"))
-  rp_ln <- vtd |> mutate(PRECINCT = cc_pack) |> group_by(PRECINCT) |>
-    summarise(.groups = "drop") |> left_join(rp, by = c("PRECINCT" = "district"))
+  vtd  <- tar_sf |> st_transform(2276)
+  vtd$freq_dem <- vtd_freq_dem
+  vtd$freq_mm  <- vtd_freq_mm
+  vtd$nw   <- if_else(vtd$vap > 0, (vtd$vap - vtd$vap_white) / vtd$vap, NA_real_)
+  vtd$h_sh <- if_else(vtd$vap > 0, vtd$vap_hisp / vtd$vap, NA_real_)
+  vtd$b_sh <- if_else(vtd$vap > 0, vtd$vap_black / vtd$vap, NA_real_)
+  
+  plan_ln <- do.call(rbind, lapply(names(PLANS), \(nm)
+                                   vtd |> mutate(district = as.integer(PLANS[[nm]])) |> group_by(district) |> summarise(.groups = "drop") |>
+                                     mutate(plan = nm))) |>
+    left_join(mutate(pst, plan = as.character(plan)), by = c("plan", "district")) |>
+    mutate(plan = factor(plan, levels = names(PLANS)),
+           l_dem   = paste0("Pct ", district, "\n", pct(dem)),
+           l_26    = paste0("Pct ", district, "\n", pct(sen26)),
+           l_shift = paste0("Pct ", district, "\n", sprintf("%+.1f", 100 * shift)),
+           l_nw    = paste0("Pct ", district, "\n", pct(nonwhite_vap)),
+           l_hisp  = paste0("Pct ", district, "\n", pct(hisp_vap)),
+           l_black = paste0("Pct ", district, "\n", pct(black_vap)))
   
   f_hw <- file.path(DIR, "tarrant_highways.rds")
   if (file.exists(f_hw)) hw <- readRDS(f_hw) else {
@@ -831,12 +801,21 @@ PART_B <- quote({
     na.value = "grey85", name = name)
   lab_box <- function(data, ...) geom_sf_label(data = data, aes(...), size = 2.9, fontface = "bold",
                                                fill = "white", colour = "grey10", lineheight = 0.9)
-  m7_lines <- geom_sf(data = m7_ln, fill = NA, colour = "black", linewidth = 0.9)
-  roads_ly <- geom_sf(data = hw, colour = "grey35", linewidth = 0.2)
   
-  # 7a. Bivariate gallery: party x race by VTD, each plan's lines on top
+  # VTDs shaded by one column, repeated once per plan with that plan's lines and precinct labels
+  plan_map <- function(fill, scale, lab, title, subtitle = NULL) {
+    base <- do.call(rbind, lapply(names(PLANS), \(nm)
+                                  transmute(vtd, v = .data[[fill]], plan = factor(nm, levels = names(PLANS)))))
+    ggplot() +
+      geom_sf(data = base, aes(fill = v), colour = NA) +
+      geom_sf(data = hw, colour = "grey35", linewidth = 0.15) +
+      geom_sf(data = plan_ln, fill = NA, colour = "black", linewidth = 0.8) +
+      lab_box(plan_ln, label = .data[[lab]]) +
+      scale + facet_wrap(~plan, nrow = 1) + labs(title = title, subtitle = subtitle) + theme_map
+  }
+  
+  # 7a. Party x race by VTD under each reference plan and a few sampled plans
   # Class breaks come from the VTDs: a third of VTDs fall in the middle party class, nonwhite share is cut at terciles.
-  vtd$nw <- if_else(vtd$vap > 0, (vtd$vap - vtd$vap_white) / vtd$vap, NA_real_)
   pb <- 0.5 + c(-1, 1) * unname(quantile(abs(vtd$dshare - 0.5), 1 / 3, na.rm = TRUE))
   nb <- unname(quantile(vtd$nw, c(1 / 3, 2 / 3), na.rm = TRUE))
   vtd$biv <- if_else(is.na(vtd$dshare) | is.na(vtd$nw), NA_character_,
@@ -855,19 +834,15 @@ PART_B <- quote({
   
   take <- function(ix, n) ix[sample.int(length(ix), min(n, length(ix)))]
   set.seed(7)
-  pick <- c(take(which(n_dem == 2), 2), take(which(n_dem == 3), if (HAS_PRE) 1 else 2))
-  gal_plans <- c(list("Map 7" = tar_sf$cc_map7, "R-pack" = cc_pack),
-                 if (HAS_PRE) list("Pre-2025" = tar_sf$cc_pre2025),
-                 setNames(lapply(pick, \(j) K[, j]), paste("Sampled", LETTERS[seq_along(pick)])))
+  pick <- c(take(which(n_dem == 2), 2), take(which(n_dem == 3), 2))[seq_len(max(0, 6 - length(PLANS)))]
+  gal_plans <- c(PLANS, setNames(lapply(pick, \(j) K[, j]), paste("Sampled", LETTERS[seq_along(pick)])))
   gal <- do.call(rbind, lapply(names(gal_plans), \(nm) {
     vtd |> mutate(dist = gal_plans[[nm]]) |> group_by(dist) |>
-      summarise(dem = sum(ndv) / sum(ndv + nrv), nwv = sum(vap - vap_white) / sum(vap),
-                s26 = sum(ndv26) / sum(ndv26 + nrv26), .groups = "drop") |>
+      summarise(dem = sum(ndv) / sum(ndv + nrv), nwv = sum(vap - vap_white) / sum(vap), .groups = "drop") |>
       mutate(panel = factor(nm, levels = names(gal_plans)))
   }))
   gal_vtd <- do.call(rbind, lapply(names(gal_plans), \(nm)
                                    transmute(vtd, biv, panel = factor(nm, levels = names(gal_plans)))))
-  
   (ggplot() +
       geom_sf(data = gal_vtd, aes(fill = biv), colour = NA) +
       geom_sf(data = gal, fill = NA, colour = "black", linewidth = 0.7) +
@@ -877,183 +852,83 @@ PART_B <- quote({
       labs(title = "Party and race under each plan") + theme_map) +
     biv_key + plot_layout(widths = c(7, 1))
   
-  # 7b. 2026 votes on each plan
-  with_totals(
-    ggplot(gal) +
-      geom_sf(aes(fill = s26), colour = "black", linewidth = 0.6) +
-      lab_box(gal, label = pct(s26)) +
-      fill_party(gal$s26, "2026 Dem. share") + facet_wrap(~panel, ncol = 3) +
-      labs(title = "2026 vote on each plan") + theme_map,
-    2026, gal_plans)
+  # 7b. Composite baseline
+  plan_map("dshare", fill_party(vtd$dshare), "l_dem", "2020-26 composite")
   
-  # 7c. Composite baseline with Map 7 lines
-  ggplot() +
-    geom_sf(data = vtd, aes(fill = dshare), colour = NA) + roads_ly + m7_lines +
-    lab_box(m7_ln, label = paste0("Pct ", PRECINCT, "\n", pct(dem))) +
-    fill_party(vtd$dshare) +
-    labs(title = "Map 7", subtitle = "2020-26 composite") + theme_map
+  # 7c. 2026 vote, with each plan's result by race
+  with_totals(plan_map("share26", fill_party(vtd$share26, "2026 Dem. share"), "l_26", "2026 vote"), 2026)
   
-  # 7c2. Composite baseline with R-pack lines
-  ggplot() +
-    geom_sf(data = vtd, aes(fill = dshare), colour = NA) + roads_ly +
-    geom_sf(data = m7_ln, fill = NA, colour = "grey25", linewidth = 0.5, linetype = 2) +
-    geom_sf(data = rp_ln, fill = NA, colour = "black", linewidth = 1) +
-    lab_box(rp_ln, label = paste0("Pct ", PRECINCT, "\n", pct(dem))) +
-    fill_party(vtd$dshare) +
-    labs(title = "R-pack plan", subtitle = "Dashed: Map 7") + theme_map
+  # 7d. Shift from the 2020-24 baseline to 2026
+  with_totals(plan_map("shift26", fill_shift(vtd$shift26), "l_shift", "2026 shift", "From 2020-24"), c(2024, 2026))
   
-  # 7d. How often each VTD lands in a Democratic-leaning precinct
-  vtd$freq_dem <- vtd_freq_dem
-  vtd$freq_mm  <- vtd_freq_mm
-  ggplot() +
-    geom_sf(data = vtd, aes(fill = freq_dem), colour = NA) + roads_ly + m7_lines +
-    lab_box(m7_ln, label = paste0("Pct ", PRECINCT, "\n", pct(dem))) +
-    fill_party(vtd$freq_dem, "Sampled plans") +
-    labs(title = "How often a D-leaning precinct") + theme_map
+  # 7e. How often sampled plans put each VTD in a Democratic-leaning precinct
+  plan_map("freq_dem", fill_party(vtd$freq_dem, "Sampled plans"), "l_dem", "How often a D-leaning precinct")
   
-  # 7e. Hispanic and Black voting-age share by VTD
-  grp <- function(x, g, num) transmute(x, group = g, share = if_else(vap > 0, {{ num }} / vap, NA_real_))
-  vtd_grp <- rbind(grp(vtd, "Hispanic VAP", vap_hisp), grp(vtd, "Black VAP", vap_black))
-  m7_grp  <- rbind(transmute(m7_ln, group = "Hispanic VAP", lab = paste0("Pct ", PRECINCT, "\n", pct(hisp_vap))),
-                   transmute(m7_ln, group = "Black VAP",    lab = paste0("Pct ", PRECINCT, "\n", pct(black_vap))))
-  ggplot() +
-    geom_sf(data = vtd_grp, aes(fill = share), colour = NA) + m7_lines +
-    lab_box(m7_grp, label = lab) +
-    facet_wrap(~group) + fill_seq(vtd_grp$share, "Share of VAP") +
-    labs(title = "Map 7") + theme_map
+  # 7f. Hispanic, Black and nonwhite voting-age population
+  plan_map("h_sh", fill_seq(vtd$h_sh, "Hispanic share of VAP"), "l_hisp", "Hispanic voting-age population")
+  plan_map("b_sh", fill_seq(vtd$b_sh, "Black share of VAP"), "l_black", "Black voting-age population")
+  plan_map("freq_mm", fill_seq(vtd$freq_mm, "Sampled plans"), "l_nw", "How often a majority-nonwhite precinct")
   
-  # 7f. How often each VTD lands in a majority-nonwhite precinct
-  ggplot() +
-    geom_sf(data = vtd, aes(fill = freq_mm), colour = NA) + roads_ly + m7_lines +
-    lab_box(m7_ln, label = paste0("Pct ", PRECINCT, "\n", pct(nonwhite_vap))) +
-    fill_seq(vtd$freq_mm, "Sampled plans") +
-    labs(title = "How often a majority-nonwhite precinct") + theme_map
-  
-  # 7j. Election by election, one total bar per race under its year
+  # 7g. Election by election, with every plan's result in every race
   vtd_year <- vtd |> select(vtdkey) |> left_join(select(year_vtd, vtdkey, year, share), by = "vtdkey")
   with_totals(
     ggplot() +
       geom_sf(data = vtd_year, aes(fill = share), colour = NA) +
-      geom_sf(data = m7_ln, fill = NA, colour = "black", linewidth = 0.5) +
       facet_wrap(~year, nrow = 1) + fill_party(vtd_year$share) +
       labs(title = "Tarrant County, 2020 to 2026") + theme_map,
     unique(year_vtd$year))
   
-  # 7k. 2026 with Map 7 lines
-  with_totals(
-    ggplot() +
-      geom_sf(data = vtd, aes(fill = share26), colour = NA) + roads_ly + m7_lines +
-      lab_box(m7_ln, label = paste0("Pct ", PRECINCT, "\n", pct(sen26))) +
-      fill_party(vtd$share26, "2026 Dem. share") +
-      labs(title = "2026 on Map 7") + theme_map,
-    2026)
+  # 7h. Which cities each plan splits (VTD level)
+  city_pieces <- imap_dfr(PLANS, \(a, nm) tibble(city = tar_sf$city_name, d = a) |> filter(!is.na(city)) |>
+                            group_by(city) |> summarise(pieces = n_distinct(d)) |> mutate(plan = nm))
+  city_pieces |> filter(pieces > 1) |> mutate(plan = factor(plan, levels = names(PLANS))) |> arrange(plan) |>
+    pivot_wider(names_from = plan, values_from = pieces, values_fill = 1) |> print(n = Inf)
+  split_by <- city_pieces |> filter(pieces > 1) |> group_by(city) |> summarise(by = paste(plan, collapse = ", "))
   
-  # 7l. Shift from the 2020-24 baseline to 2026, Map 7 lines
-  with_totals(
-    ggplot() +
-      geom_sf(data = vtd, aes(fill = shift26), colour = NA) + roads_ly + m7_lines +
-      lab_box(m7_ln, label = paste0("Pct ", PRECINCT, "\n", sprintf("%+.1f", 100 * (sen26 - dem_pre)))) +
-      fill_shift(vtd$shift26) +
-      labs(title = "2026 shift on Map 7", subtitle = "From 2020-24") + theme_map,
-    c(2024, 2026))
-  
-  # 7m. The same shift under the R-pack plan's lines
-  with_totals(
-    ggplot() +
-      geom_sf(data = vtd, aes(fill = shift26), colour = NA) + roads_ly +
-      geom_sf(data = rp_ln, fill = NA, colour = "black", linewidth = 1) +
-      lab_box(rp_ln, label = paste0("Pct ", PRECINCT, "\n", pct(sen26), " (", sprintf("%+.1f", 100 * (sen26 - dem_pre)), ")")) +
-      fill_shift(vtd$shift26) +
-      labs(title = "2026 on the R-pack plan", subtitle = "2026 share and shift from 2020-24") + theme_map,
-    c(2024, 2026), list("R-pack" = cc_pack))
-  
-  # 7g/7h. Which cities and communities Map 7 splits (true geometry, 5% minimum piece)
-  SPLIT_MIN <- 0.05
-  split_geo <- function(layer, id_col) {
-    ix <- suppressWarnings(st_intersection(st_make_valid(st_transform(layer[id_col], 2276)), m7_ln["PRECINCT"]))
-    ix$a <- as.numeric(st_area(ix))
-    ix |> st_drop_geometry() |>
-      group_by(id = .data[[id_col]], PRECINCT) |> summarise(a = sum(a), .groups = "drop_last") |>
-      mutate(sh = a / sum(a)) |>
-      summarise(n_parts = sum(sh >= SPLIT_MIN), minor_share = 1 - max(sh),
-                precincts = paste(sort(PRECINCT[sh >= SPLIT_MIN]), collapse = ", "), .groups = "drop")
-  }
-  # tarrant_cities.gpkg already has an n_parts column (polygon pieces); drop clashes before joining
-  SPLIT_COLS <- c("n_parts", "minor_share", "precincts")
-  city_sp <- cities |> select(-any_of(SPLIT_COLS)) |> st_transform(2276) |>
-    left_join(split_geo(cities, "city"), by = c("city" = "id"))
-  comm_sp <- comms  |> select(-any_of(SPLIT_COLS)) |> st_transform(2276) |>
-    left_join(split_geo(comms, "comm_id"), by = c("comm_id" = "id"))
-  
-  city_sp |> st_drop_geometry() |> filter(n_parts > 1) |>
-    select(city, split_tier, n_parts, precincts, minor_share) |> arrange(desc(minor_share)) |> print()
-  comm_sp |> st_drop_geometry() |> filter(n_parts > 1) |>
-    select(name, city, n_parts, precincts, minor_share) |> arrange(desc(minor_share)) |> print()
-  
-  # Inside each split city: VTDs on the party x race key, Map 7 pieces outlined, then the city's 2026 result
-  # as a total and one bar per piece
-  vtd$nwn <- vtd$vap - vtd$vap_white
-  city_panel <- function(cty) {
-    v <- filter(vtd, city_name == cty)
-    pieces <- v |> group_by(piece = cc_map7) |>
-      summarise(dem = sum(ndv) / sum(ndv + nrv), nw = sum(nwn) / sum(vap), .groups = "drop")
+  # Fort Worth and Arlington under each plan: party x race by VTD, the plan's pieces, and the 2026 result by piece
+  CITY_SHOW <- c("Fort Worth", "Arlington")
+  city_panel <- function(cty, nm) {
+    a <- as.integer(PLANS[[nm]])
+    v <- vtd |> mutate(piece = a) |> filter(city_name %in% cty)
+    pieces <- v |> group_by(piece) |>
+      summarise(dem = sum(ndv) / sum(ndv + nrv), nwv = sum(vap - vap_white) / sum(vap), .groups = "drop")
     mp <- ggplot() +
       geom_sf(data = v, aes(fill = biv), colour = "white", linewidth = 0.05) +
       geom_sf(data = pieces, fill = NA, colour = "black", linewidth = 0.9) +
-      lab_box(pieces, label = sprintf("Pct %d\nD %.0f  NW %.0f", piece, 100 * dem, 100 * nw)) +
+      lab_box(pieces, label = sprintf("Pct %d\nD %.0f  NW %.0f", piece, 100 * dem, 100 * nwv)) +
       scale_fill_manual(values = BIV, na.value = "grey90", guide = "none") +
-      labs(title = cty) + theme_map
-    mp / dist_bar(2026, setNames(list(tar_sf$cc_map7), cty), keep = tar_sf$city_name %in% cty) +
+      labs(title = paste0(cty, ": ", nm)) + theme_map
+    mp / dist_bar(2026, setNames(list(PLANS[[nm]]), nm), keep = tar_sf$city_name %in% cty) +
       plot_layout(heights = c(1, 0.32))
   }
-  split_cities <- city_sp$city[which(city_sp$n_parts > 1)]
-  # wrap_elements freezes each city's map-over-bars stack into one panel, so the row has exactly one slot per city
-  wrap_plots(c(lapply(split_cities, \(cty) wrap_elements(full = city_panel(cty))), list(biv_key)),
-             nrow = 1, ncol = length(split_cities) + 1, widths = c(rep(4, length(split_cities)), 1)) +
-    plot_annotation(title = sprintf("Map 7 splits %d of %d cities", length(split_cities), nrow(city_sp)),
-                    theme = theme(plot.title = element_text(face = "bold")))
+  city_grid <- unlist(lapply(CITY_SHOW, \(cty) lapply(names(PLANS), \(nm) wrap_elements(full = city_panel(cty, nm)))),
+                      recursive = FALSE)
+  wrap_plots(city_grid, ncol = length(PLANS), byrow = TRUE) +
+    plot_annotation(title = "The two largest cities under each plan", theme = theme(plot.title = element_text(face = "bold")))
   
-  ggplot() +
-    geom_sf(data = m7_ln, fill = "grey97", colour = NA) +
-    geom_sf(data = comm_sp, aes(fill = n_parts > 1), colour = "white", linewidth = 0.1) +
-    m7_lines +
-    scale_fill_manual(values = c(`TRUE` = "#e08214", `FALSE` = "grey82"), labels = c(`TRUE` = "Split", `FALSE` = "Whole"),
-                      name = NULL, na.value = "grey95") +
-    labs(title = sprintf("Map 7 splits %d of %d mapped communities", sum(comm_sp$n_parts > 1, na.rm = TRUE), nrow(comm_sp))) +
-    theme_map
-  
-  # 7i. Which cities sampled plans split, against Map 7 (VTD-level, cities with 2+ VTDs)
+  # 7i. How often sampled plans split each city, and which reference plans split it (cities with 2+ VTDs)
   city_freq <- tibble(city = names(city_split_n), freq = as.numeric(city_split_n) / n_plans) |>
-    left_join(tibble(city = cgrp, p = tar_sf$cc_map7[has_city]) |> group_by(city) |>
-                summarise(vtds = n(), m7_split = n_distinct(p) > 1), by = "city") |>
+    left_join(tibble(city = cgrp) |> count(city, name = "vtds"), by = "city") |>
+    left_join(split_by, by = "city") |>
     filter(vtds >= 2)
-  ggplot(city_freq, aes(freq, fct_reorder(city, freq), fill = m7_split)) +
-    geom_col(width = 0.7) +
-    scale_fill_manual(values = c(`TRUE` = ACC, `FALSE` = "grey70"),
-                      labels = c(`TRUE` = "Split by Map 7", `FALSE` = "Whole in Map 7"), name = NULL) +
-    scale_x_continuous(labels = pct, expand = expansion(mult = c(0, 0.05))) +
-    labs(x = "Sampled plans splitting the city", y = NULL, title = "City splits") +
-    theme_cc + theme(legend.position = "top", legend.justification = "left", panel.grid.major.y = element_blank(),
-                     panel.grid.major.x = element_line(colour = "grey90"))
+  ggplot(city_freq, aes(freq, fct_reorder(city, freq))) +
+    geom_col(aes(fill = !is.na(by)), width = 0.7) +
+    geom_text(aes(label = replace_na(by, "")), hjust = -0.05, size = 2.8) +
+    scale_fill_manual(values = c(`TRUE` = "grey45", `FALSE` = "grey78"), guide = "none") +
+    scale_x_continuous(labels = pct, expand = expansion(mult = c(0, 0.35))) +
+    labs(x = "Sampled plans splitting the city", y = NULL, title = "City splits",
+         subtitle = "Labels: reference plans that split the city") +
+    theme_cc + theme(panel.grid.major.y = element_blank(), panel.grid.major.x = element_line(colour = "grey90"))
   
   # ---- 8. Interactive map: every plan with its precinct shares, toggleable boundaries and 2026 results ----
   ideal <- sum(tar_sf$pop) / 4
-  plan_layer <- function(assign, nm) {
-    st <- plan_stats(assign)
-    vtd |> mutate(PRECINCT = as.integer(assign)) |> group_by(PRECINCT) |> summarise(.groups = "drop") |>
-      left_join(st, by = c("PRECINCT" = "district")) |>
-      mutate(dist  = as.character(PRECINCT),
-             tip   = sprintf("%s Pct %s<br>Pop %s (%+.1f%%)<br>D %.1f%% composite | %.1f%% 2026<br>Nonwhite VAP %.1f%%",
-                             nm, dist, format(pop, big.mark = ","), 100 * (pop / ideal - 1),
-                             100 * dem, 100 * sen26, 100 * nonwhite_vap),
-             lab   = sprintf("%s\nD %.0f | '26 %.0f", dist, 100 * dem, 100 * sen26)) |>
-      st_transform(4326)
-  }
-  PL <- c(list("Map 7" = tar_sf$cc_map7, "R-pack" = cc_pack), if (HAS_PRE) list("Pre-2025" = tar_sf$cc_pre2025))
-  LY <- imap(PL, plan_layer)
-  LINE <- c("Map 7" = "#000000", "R-pack" = "#3b0f70", "Pre-2025" = "#7f7f7f")
-  DASH <- list("Map 7" = c(1, 0), "R-pack" = c(2, 1), "Pre-2025" = c(1, 1))
-  
+  LY <- lapply(split(plan_ln, plan_ln$plan), \(x) x |>
+                 mutate(dist = as.character(district),
+                        tip  = sprintf("%s Pct %s<br>Pop %s (%+.1f%%)<br>D %.1f%% composite | %.1f%% 2026<br>Nonwhite VAP %.1f%%",
+                                       plan, dist, format(pop, big.mark = ","), 100 * (pop / ideal - 1),
+                                       100 * dem, 100 * sen26, 100 * nonwhite_vap),
+                        lab  = sprintf("%s\nD %.0f | '26 %.0f", dist, 100 * dem, 100 * sen26)) |>
+                 st_transform(4326))
   pc_ll <- pc26 |> st_transform(4326) |>
     mutate(sen_tip = sprintf("Pct %s<br>Senate D %s R %s<br>D %.1f%%", PCT, SEN_D, SEN_R, 100 * SEN_2P),
            cc_tip  = sprintf("Pct %s | Commissioner Pct %s<br>D %s R %s<br>D %.1f%%", PCT, CC_PCT, CC_D, CC_R, 100 * CC_2P))
@@ -1062,21 +937,20 @@ PART_B <- quote({
     r <- max(abs(quantile(x - 0.5, c(0.02, 0.98), na.rm = TRUE)))
     interpolate(column = col, values = 0.5 + c(-r, 0, r), stops = c(REP, "#f7f7f7", DEM))
   }
-  
+  SHOW <- if ("R-pack" %in% names(LY)) "R-pack" else names(LY)[1]             # plan whose fill and labels start switched on
   m <- maplibre(style = "https://tiles.openfreemap.org/styles/positron", bounds = LY[[1]]) |>
     add_fill_layer(id = "2026 Senate", source = pc_ll, fill_opacity = 0.7, tooltip = "sen_tip",
                    visibility = "none", fill_color = ramp("SEN_2P", pc_ll$SEN_2P)) |>
     add_fill_layer(id = "2026 Commissioner", source = filter(pc_ll, CC_PCT > 0), fill_opacity = 0.7, tooltip = "cc_tip",
                    visibility = "none", fill_color = ramp("CC_2P", pc_ll$CC_2P[pc_ll$CC_PCT > 0]))
   for (nm in names(LY)) {
-    on <- if (nm == "R-pack") "visible" else "none"
+    on <- if (nm == SHOW) "visible" else "none"
     m <- m |>
       add_fill_layer(id = paste(nm, "precincts"), source = LY[[nm]], fill_opacity = 0.35, tooltip = "tip",
                      visibility = on, fill_color = match_expr("dist", values = names(DCOL), stops = unname(DCOL))) |>
-      add_line_layer(id = paste(nm, "lines"), source = LY[[nm]], line_color = LINE[[nm]],
-                     line_width = if (nm == "Map 7") 3 else 2, line_dasharray = DASH[[nm]],
-                     visibility = if (nm %in% c("Map 7", "R-pack")) "visible" else "none") |>
-      add_symbol_layer(id = paste(nm, "shares"), source = st_point_on_surface(LY[[nm]]),
+      add_line_layer(id = paste(nm, "lines"), source = LY[[nm]], line_color = PCOL[[nm]], line_width = 2.5,
+                     visibility = "visible") |>
+      add_symbol_layer(id = paste(nm, "shares"), source = suppressWarnings(st_point_on_surface(LY[[nm]])),
                        text_field = get_column("lab"), text_size = 13, text_color = "#111111",
                        text_halo_color = "#ffffff", text_halo_width = 2, visibility = on)
   }

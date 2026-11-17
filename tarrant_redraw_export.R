@@ -1,6 +1,6 @@
 # SCRIPT: tarrant_redraw_export.R
 # Writes the TarrantRedraw app's data files into a local clone of github.com/Bryvado/TarrantRedraw,
-# copies in the two pipeline scripts, then commits and pushes.
+# copies in the pipeline scripts, then commits and pushes.
 # Self-starting: it runs the data-building part of tarrant_cc_redist_map7.R first (checkpoints only,
 # no charts or maps), so it works from a fresh R session.
 #
@@ -16,17 +16,17 @@ library(rmapshaper)
 library(gert)
 
 MAIN      <- "//apporto.com/dfs/GWU/Users/brysonkloesel_gwu/Documents/TarrantRedistricting/tarrant_cc_redist_map7.R"
-REPO_URL  <- "https://github.com/Bryvado/TarrantRedraw.git"
+REPO_URL  <- "https://Bryvado@github.com/Bryvado/TarrantRedraw.git"   # username in the URL: gert needs it to use the token
 REPO      <- file.path(Sys.getenv("USERPROFILE"), "TarrantRedraw")   # local disk: libgit2 can't open repos on the network share
 OUT       <- file.path(REPO, "data")
 GIT_NAME  <- "Bryvado"
 GIT_EMAIL <- "166976989+Bryvado@users.noreply.github.com"
 
-# ---- 0. Build the pipeline objects (main script, top through the R-pack plan) ----
-NEED_OBJ <- c("tar_sf", "cc_pack", "map7_sf", "cities", "comms", "DIR")
+# ---- 0. Build the pipeline objects (main script, top through the plan list in section 4d) ----
+NEED_OBJ <- c("tar_sf", "PLANS", "map7_sf", "cities", "comms", "DIR")
 if (!all(sapply(NEED_OBJ, exists))) {
   stopifnot(file.exists(MAIN))
-  src  <- readLines(MAIN)
+  src  <- readLines(MAIN, warn = FALSE)
   stop_at <- grep("^# ==== END DATA BUILD", src)
   stopifnot(length(stop_at) == 1)
   eval(parse(text = src[1:stop_at]), envir = globalenv())
@@ -35,7 +35,9 @@ stopifnot(all(sapply(NEED_OBJ, exists)))
 
 # ---- 0b. Local clone ----
 if (!dir.exists(file.path(REPO, ".git"))) git_clone(REPO_URL, REPO)
-stopifnot(dir.exists(file.path(REPO, ".git")))
+stopifnot(dir.exists(file.path(REPO, ".git")), nzchar(Sys.getenv("GITHUB_PAT")))
+git_remote_set_url(REPO_URL, remote = "origin", repo = REPO)                 # older clones still hold the URL without the username
+git_pull(remote = "origin", password = Sys.getenv("GITHUB_PAT"), repo = REPO)  # take the app's commits first, so the push at the end is clean
 dir.create(file.path(OUT, "blocks"), recursive = TRUE, showWarnings = FALSE)
 
 wr <- function(x, f) {
@@ -67,9 +69,10 @@ if (file.exists(f_adj)) adj <- readRDS(f_adj) else {
 }
 write_json(adj, file.path(OUT, "vtd_adj.json"), dataframe = "columns", digits = 8)
 
-# ---- 3. Reference plans: Map 7 and R-pack (pre-2025 if you have it) ----
-plan_tab <- tibble(vtdkey = tar_sf$vtdkey, map7 = tar_sf$cc_map7, rpack = cc_pack)
-if (!anyNA(tar_sf$cc_pre2025)) plan_tab$pre2025 <- tar_sf$cc_pre2025
+# ---- 3. Reference plans: one column per plan in PLANS (map7, rpack, swing, and pre2025 if present) ----
+plan_tab <- bind_cols(tibble(vtdkey = tar_sf$vtdkey),
+                      as_tibble(setNames(lapply(PLANS, as.integer), tolower(gsub("[^A-Za-z0-9]", "", names(PLANS))))))
+print(names(plan_tab))
 write_csv(plan_tab, file.path(OUT, "plans.csv"))
 
 # ---- 4. Overlays ----
@@ -145,8 +148,8 @@ is_blk <- str_detect(fs, "[/\\\\]blocks[/\\\\]")
 tibble(file = basename(fs[!is_blk]), mb = round(file.size(fs[!is_blk]) / 1e6, 2)) |> print()
 cat("Block files:", sum(is_blk), "| total MB:", round(sum(file.size(fs[is_blk])) / 1e6, 1), "\n")
 
-# ---- 7. Copy the two scripts in, then commit and push ----
-extras <- c(MAIN, file.path(dirname(MAIN), "tarrant_redraw_export.R"))
+# ---- 7. Copy the scripts in, then commit and push ----
+extras <- file.path(dirname(MAIN), c(basename(MAIN), "tarrant_redraw_export.R", "tarrant_cc_planscore.R"))
 for (f in extras[file.exists(extras)]) file.copy(f, REPO, overwrite = TRUE)
 if (any(!file.exists(extras))) cat("Not found, copy by hand:", basename(extras[!file.exists(extras)]), "\n")
 
@@ -158,6 +161,5 @@ git_config_set("user.email", GIT_EMAIL, repo = REPO)
 git_add(".", repo = REPO)
 if (nrow(git_status(repo = REPO))) git_commit("Add app data and pipeline scripts", repo = REPO)
 
-stopifnot(nzchar(Sys.getenv("GITHUB_PAT")))
-git_push(remote = "origin", set_upstream = TRUE, password = Sys.getenv("GITHUB_PAT"), repo = REPO)
+git_push(remote = "origin", password = Sys.getenv("GITHUB_PAT"), repo = REPO)
 git_log(repo = REPO, max = 3)
