@@ -4,7 +4,7 @@
 import {
   PRECINCT, NODATA, PARTISAN_PALETTES, DEFAULT_PARTISAN, SHIFT, SEQ, interpolateExpr,
 } from './colors.js';
-import { dissolveLines } from './topology.js';
+import { dissolveLines, mixedBoundary, splitGeometry } from './topology.js';
 import { debounceFrame } from './util.js';
 
 export const BASEMAP = 'https://tiles.openfreemap.org/styles/positron';
@@ -52,9 +52,29 @@ const measureExpr = (m) =>
   ['case', ['has', m.prop], interpolateExpr(['get', m.prop], m.ramp, m.lo, m.hi), NODATA];
 
 /** Whether a mode's measure exists on the block features as well as on VTDs. */
-const onBlocks = (m) => m && m.prop && m.prop !== 'dshare_pre' && m.prop !== 'shift26';
+// Every measure is on the blocks: their own votes and VAP, and for the
+// baseline (which has no block figures) their VTD's value; see decorateBlocks.
+const onBlocks = (m) => !!(m && m.prop);
 
 const districtColorExpr = (unassigned = CLEAR) => byDistrict(PRECINCT, unassigned);
+
+/**
+ * Block shading values that are not in the block file. Blocks have no
+ * baseline, so the 2020-24 view shows the VTD's baseline on each block, and
+ * the shift is the block's own 2026 share minus that baseline.
+ */
+function decorateBlocks(vtdProps, features) {
+  if (features._decorated) return;
+  const base = vtdProps.dshare_pre;
+  for (const f of features) {
+    const p = f.properties;
+    if (base != null) {
+      p.dshare_pre = base;
+      if (p.share26 != null) p.shift26 = p.share26 - base;
+    }
+  }
+  features._decorated = true;
+}
 
 export class MapView {
   constructor(container, data, topo, state) {
@@ -68,6 +88,7 @@ export class MapView {
     this.onPick = () => {};
     this.onHover = () => {};
     this.onSelect = () => {};
+    this.onSplitClick = () => {};
     this.blockFeatures = new Map();   // vtdIdx -> features array
 
     this.map = new maplibregl.Map({
@@ -134,11 +155,16 @@ export class MapView {
 
     m.addLayer({
       id: 'blocks-fill', type: 'fill', source: 'blocks',
-      paint: { 'fill-color': districtColorExpr(), 'fill-opacity': 0.82 },
+      // Same opacity as the VTD fill (set with the shading mode), and no
+      // antialiasing, which would draw hairline seams between blocks: a
+      // finished split reads exactly like the VTD fill around it.
+      paint: { 'fill-color': districtColorExpr(), 'fill-opacity': 0.72, 'fill-antialias': false },
     }, firstSymbol);
+    // Block lines only for the VTD that is selected or under the brush.
     m.addLayer({
       id: 'blocks-line', type: 'line', source: 'blocks',
-      paint: { 'line-color': '#1c1e22', 'line-width': 0.4, 'line-opacity': 0.45 },
+      filter: ['in', ['get', 'vtdkey'], ['literal', []]],
+      paint: { 'line-color': '#1c1e22', 'line-width': 0.5, 'line-opacity': 0.55 },
     }, firstSymbol);
 
     // Overlays, hidden until toggled.
@@ -279,10 +305,29 @@ export class MapView {
   /** Ring the selected unit. `vtdKey` alone rings a VTD; with `geoid`, the block too. */
   setSelected(vtdKey, geoid) {
     if (!this.ready) return;
+    this.selectedVtdKey = vtdKey ?? null;
+    this.updateBlockLines();
     const v = ['==', ['id'], vtdKey ?? -1];
     this.map.setFilter('vtd-selected-halo', v);
     this.map.setFilter('vtd-selected', v);
     this.map.setFilter('block-selected', ['==', ['get', 'GEOID20'], geoid ?? '']);
+  }
+
+  /** Show block lines for the selected VTD and the one under the brush, if split. */
+  updateBlockLines() {
+    if (!this.ready) return;
+    const keys = [this.selectedVtdKey, this.brushVtdKey].filter((k) => k != null);
+    const sig = keys.join(',');
+    if (sig === this._lineSig) return;
+    this._lineSig = sig;
+    this.map.setFilter('blocks-line', ['in', ['get', 'vtdkey'], ['literal', keys]]);
+  }
+
+  setBrushVtd(feat) {
+    const k = feat ? feat.properties.vtdkey : null;
+    const idx = k == null ? undefined : this.data.idxOf.get(k);
+    this.brushVtdKey = idx !== undefined && this.state.isSplit(idx) ? k : null;
+    this.updateBlockLines();
   }
 
   /** Highlight a piece: VTD keys and block GEOIDs. Pass nothing to clear. */
@@ -319,6 +364,7 @@ export class MapView {
     const base = cat ? 0.72 : (this.dimUnder ? 0.45 : 0.8);
     this.map.setPaintProperty('vtd-fill', 'fill-opacity',
       ['case', ['==', ['feature-state', 'split'], 1], 0, base]);
+    this.map.setPaintProperty('blocks-fill', 'fill-opacity', base);
 
     // Blocks follow the same mode where the property exists on blocks.
     const blockUnit = onBlocks(m) ? measureExpr(m) : null;
@@ -351,20 +397,46 @@ export class MapView {
   // ---- dissolved outlines -------------------------------------------------
   refreshOutlines() {
     if (!this.ready) return;
-    const members = [[], [], [], [], []];
-    for (let i = 0; i < this.data.n; i++) {
-      // Split VTDs go to their majority precinct for the outline, matching how
-      // the geometry metrics treat them.
-      const d = this.state.isSplit(i) ? this.state.majorityOf(i, this.blockPopMap(i)) : this.state.asn[i];
-      members[d].push(i);
-    }
     const features = [];
-    for (let d = 1; d <= 4; d++) {
-      if (!members[d].length) continue;
-      const geom = dissolveLines(this.topo, members[d]);
-      if (geom) features.push({ type: 'Feature', properties: { d }, geometry: geom });
+    const splits = this.splitGeometries();
+    if (!splits.size) {
+      const members = [[], [], [], [], []];
+      for (let i = 0; i < this.data.n; i++) members[this.state.asn[i]].push(i);
+      for (let d = 1; d <= 4; d++) {
+        if (!members[d].length) continue;
+        const geom = dissolveLines(this.topo, members[d]);
+        if (geom) features.push({ type: 'Feature', properties: { d }, geometry: geom });
+      }
+    } else {
+      // Borders through split VTDs follow the block assignment.
+      const { paths, odd, stats } = mixedBoundary(this.topo, this.state.asn, splits);
+      this.lastOutlineOdd = odd;
+      this.lastOutlineStats = stats;
+      for (let d = 1; d <= 4; d++) {
+        if (paths[d].length) features.push({ type: 'Feature', properties: { d }, geometry: { type: 'MultiLineString', coordinates: paths[d] } });
+      }
     }
     this.map.getSource('outline').setData({ type: 'FeatureCollection', features });
+  }
+
+  /**
+   * Split VTDs with their block geometry loaded, as mixedBoundary wants them.
+   * The static geometry is cached per block file.
+   */
+  splitGeometries() {
+    const out = new Map();
+    this._splitGeo = this._splitGeo || new WeakMap();
+    for (const idx of this.state.splitIndices()) {
+      const feats = this.blockFeatures.get(idx);
+      if (!feats) continue;
+      let geo = this._splitGeo.get(feats);
+      if (!geo) {
+        geo = splitGeometry(this.topo, idx, this.data.vtdGeo.features[idx].geometry, feats);
+        this._splitGeo.set(feats, geo);
+      }
+      out.set(idx, { geo, ov: this.state.blockOv.get(idx) });
+    }
+    return out;
   }
 
   blockPopMap(idx) {
@@ -399,7 +471,7 @@ export class MapView {
     const features = [];
     for (const idx of this.state.splitIndices()) {
       const f = this.blockFeatures.get(idx);
-      if (f) features.push(...f);
+      if (f) { decorateBlocks(this.data.vtdGeo.features[idx].properties, f); features.push(...f); }
     }
     this.map.getSource('blocks').setData({ type: 'FeatureCollection', features });
     this.syncBlockStates();
@@ -415,9 +487,14 @@ export class MapView {
     let painting = false, boxing = false, boxStart = null, lastPt = null;
     // A press that never moved is a click: it also selects the unit under it.
     let downPt = null, moved = false;
-    // Whether the drag in progress erases: fixed at mousedown, so a right-drag
+    // Whether the drag in progress erases: fixed when it starts, so a right-drag
     // keeps erasing for its whole length.
     let dragErase = false;
+    // A right press is held back until it moves: released in place it is a
+    // right-click (split); moved more than RIGHT_SLOP px it is a right-drag,
+    // which erases as before.
+    const RIGHT_SLOP = 4;
+    let rightDown = null;
     const rubber = document.getElementById('box-rubber');
     const ring = document.getElementById('brush-ring');
     this.brushRadius = this.brushRadius || 2;
@@ -472,17 +549,10 @@ export class MapView {
       }
     });
 
-    m.on('mousedown', (e) => {
-      if (wantsPan()) return;                             // let the map pan
-      const oe = e.originalEvent;
-      if ((oe.ctrlKey || oe.metaKey) && oe.button === 0) return;   // select, handled on click
-      // Left button paints; right button (or Alt) erases.
-      if (oe.button !== 0 && oe.button !== 2) return;
-      dragErase = oe.button === 2 || oe.altKey;
+    const startPress = (e, oe) => {
       if (this.brushMode === 'fill' && !oe.shiftKey) {
         const top = m.queryRenderedFeatures(e.point, { layers: ['vtd-fill'] })[0];
         if (top) this.onPick({ fill: this.data.idxOf.get(top.properties.vtdkey), erase: dragErase });
-        oe.preventDefault();
         return;
       }
       if (this.brushMode === 'box' || oe.shiftKey) {
@@ -491,17 +561,43 @@ export class MapView {
         rubber.hidden = false;
         rubber.style.left = `${e.point.x}px`; rubber.style.top = `${e.point.y}px`;
         rubber.style.width = '0px'; rubber.style.height = '0px';
-        oe.preventDefault();
         return;
       }
       painting = true; lastPt = e.point; downPt = e.point; moved = false;
       m.dragPan.disable();
       emitPick(pickAt(e.point), dragErase);
+    };
+
+    m.on('mousedown', (e) => {
+      const oe = e.originalEvent;
+      if (oe.button === 2) {
+        // Right button, in every tool: decided on move or release.
+        rightDown = { point: e.point, shift: oe.shiftKey };
+        oe.preventDefault();
+        return;
+      }
+      if (wantsPan()) return;                             // let the map pan
+      if ((oe.ctrlKey || oe.metaKey) && oe.button === 0) return;   // select, handled on click
+      // Left button paints; Alt+left erases.
+      if (oe.button !== 0) return;
+      dragErase = oe.altKey;
+      startPress(e, oe);
       oe.preventDefault();
     });
 
     m.on('mousemove', (e) => {
       moveRing(e.point);
+      if (rightDown) {
+        const d = Math.hypot(e.point.x - rightDown.point.x, e.point.y - rightDown.point.y);
+        if (d <= RIGHT_SLOP) return;
+        // A right-drag: erase from where the press began, in the paint tools.
+        const from = rightDown;
+        rightDown = null;
+        if (!wantsPan() && this.brushMode !== 'fill') {
+          dragErase = true;
+          startPress({ point: from.point }, { shiftKey: from.shift });
+        }
+      }
       if (boxing) {
         const x0 = Math.min(boxStart.x, e.point.x), y0 = Math.min(boxStart.y, e.point.y);
         rubber.style.left = `${x0}px`; rubber.style.top = `${y0}px`;
@@ -527,12 +623,20 @@ export class MapView {
         }
         lastPt = e.point;
         emitPick(acc, dragErase);
+        this.setBrushVtd(topAt(e.point));
         return;
       }
       this.hover(e.point);
     });
 
     const finish = (e) => {
+      if (rightDown) {
+        // Pressed and released in place: a right-click splits.
+        const at = rightDown.point;
+        rightDown = null;
+        if (e) this.onSplitClick(topAt(at));
+        return;
+      }
       if (boxing) {
         boxing = false; rubber.hidden = true;
         m.dragPan.enable();
@@ -554,7 +658,7 @@ export class MapView {
       }
     };
     m.on('mouseup', finish);
-    canvas.addEventListener('mouseleave', () => { finish(null); moveRing(null); });
+    canvas.addEventListener('mouseleave', () => { finish(null); moveRing(null); this.setBrushVtd(null); });
     window.addEventListener('blur', () => finish(null));
 
     window.addEventListener('keydown', (e) => {
@@ -572,6 +676,7 @@ export class MapView {
       layers: this.blockFeatures.size ? ['blocks-fill', 'vtd-fill'] : ['vtd-fill'],
     });
     const top = feats[0];
+    this.setBrushVtd(top || null);
     if (!top) {
       this.map.setFilter('vtd-hover', ['==', ['id'], -1]);
       this.onHover(null);

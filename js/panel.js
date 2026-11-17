@@ -189,7 +189,9 @@ export class Panel {
       `${mx.comms.total} communities have VTDs assigned to them; the other neighborhoods in the ` +
         'overlay are not carried on any VTD, so they are not counted as split or whole.',
       mx.nSplit ? `${mx.nSplit} VTD${mx.nSplit > 1 ? 's' : ''} split to blocks. Block-level partisan ` +
-        'figures are estimates: each VTD’s votes are spread across its blocks by voting-age population.' : null,
+        'figures are model estimates from race composition: a model fitted on VTDs, scaled so each ' +
+        'VTD’s blocks add up exactly to its real votes. Blocks have no 2020–24 baseline, so a block’s ' +
+        'shift is its 2026 estimate minus its VTD’s baseline.' : null,
     ].filter(Boolean).map((t) => `<p>${t}</p>`).join('');
   }
 }

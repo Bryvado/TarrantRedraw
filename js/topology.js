@@ -78,15 +78,20 @@ export function boundarySegments(topo, indices) {
  */
 export function stitch(topo, segs) {
   const { px, py, segA, segB } = topo;
-  const inc = new Map();             // point id -> segment ids
-  for (const s of segs) {
-    for (const p of [segA[s], segB[s]]) {
-      let a = inc.get(p);
-      if (!a) { a = []; inc.set(p, a); }
-      a.push(s);
+  return stitchPairs(segs.map((sg) => [segA[sg], segB[sg]]), (id) => [px[id], py[id]]);
+}
+
+/** Stitch [a, b] point-id pairs into polylines; `xy(id)` gives a point's coordinates. */
+export function stitchPairs(pairs, xy) {
+  const inc = new Map();             // point id -> pair indices
+  pairs.forEach(([a, b], k) => {
+    for (const p of [a, b]) {
+      let arr = inc.get(p);
+      if (!arr) { arr = []; inc.set(p, arr); }
+      arr.push(k);
     }
-  }
-  const used = new Set();
+  });
+  const used = new Uint8Array(pairs.length);
   const paths = [];
 
   const walk = (startPt) => {
@@ -94,16 +99,16 @@ export function stitch(topo, segs) {
     let cur = startPt;
     for (;;) {
       const cands = inc.get(cur);
-      if (!cands) break;
-      let next = -1, viaSeg = -1;
-      for (const s of cands) {
-        if (used.has(s)) continue;
-        viaSeg = s;
-        next = segA[s] === cur ? segB[s] : segA[s];
-        break;
+      let next = -1;
+      if (cands) {
+        for (const k of cands) {
+          if (used[k]) continue;
+          used[k] = 1;
+          next = pairs[k][0] === cur ? pairs[k][1] : pairs[k][0];
+          break;
+        }
       }
-      if (viaSeg < 0) break;
-      used.add(viaSeg);
+      if (next < 0) break;
       path.push(next);
       cur = next;
       if (cur === startPt) break;
@@ -115,16 +120,15 @@ export function stitch(topo, segs) {
   const starts = [];
   for (const [p, arr] of inc) if (arr.length % 2 === 1) starts.push(p);
   for (const p of starts.concat(Array.from(inc.keys()))) {
-    while (true) {
+    for (;;) {
       const cands = inc.get(p);
-      if (!cands || cands.every((s) => used.has(s))) break;
+      if (!cands || cands.every((k) => used[k])) break;
       const path = walk(p);
       if (path.length > 1) paths.push(path);
       else break;
     }
   }
-
-  return paths.map((ids) => ids.map((id) => [px[id], py[id]]));
+  return paths.map((ids) => ids.map(xy));
 }
 
 const signedArea = (ring) => {
@@ -157,8 +161,12 @@ export function dissolveLines(topo, indices) {
  * to the smallest ring that contains it.
  */
 export function dissolvePolygon(topo, indices) {
-  let rings = stitch(topo, boundarySegments(topo, indices))
-    .filter((r) => r.length >= 4);
+  return pathsToPolygon(stitch(topo, boundarySegments(topo, indices)));
+}
+
+/** Closed boundary paths to a (Multi)Polygon, holes attached by containment. */
+export function pathsToPolygon(paths) {
+  let rings = paths.filter((r) => r.length >= 4);
   // Close any ring the walk left open (shouldn't happen on clean topology).
   rings = rings.map((r) => {
     const a = r[0], b = r[r.length - 1];
@@ -202,4 +210,203 @@ export function dissolvePolygon(topo, indices) {
   return polys.length === 1
     ? { type: 'Polygon', coordinates: polys[0] }
     : { type: 'MultiPolygon', coordinates: polys };
+}
+
+// ---- mixed-resolution dissolve: VTDs plus the blocks of split VTDs ----------
+//
+// Inside a split VTD the precinct border runs along block segments that
+// separate blocks in different precincts. On the split VTD's own perimeter the
+// VTD segments are kept, and each takes the precinct of the block it touches,
+// found by testing a point just inside the segment's midpoint against the
+// VTD's blocks. Block geometry is unsimplified and the VTD layer is
+// simplified, so their perimeters never share coordinates: segments are never
+// cancelled across the two. Where a block border reaches the perimeter, its
+// end is joined to the perimeter vertex where the segment precinct changes,
+// so every outline closes with no gaps and no spurs.
+
+const M_PER_DEG_LAT = 110574;
+const metres = (ax, ay, bx, by) => {
+  const c = Math.cos(((ay + by) / 2) * Math.PI / 180);
+  return Math.hypot((bx - ax) * 111320 * c, (by - ay) * M_PER_DEG_LAT);
+};
+const polyRings = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates);
+
+/** Even-odd point in polygon over every ring of a Polygon or MultiPolygon. */
+function inGeometry(pt, geom) {
+  let inside = false;
+  for (const poly of polyRings(geom)) for (const ring of poly) if (pointInRing(pt, ring)) inside = !inside;
+  return inside;
+}
+
+function bboxOfGeom(geom) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const poly of polyRings(geom)) for (const ring of poly) for (const [x, y] of ring) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  return [x0, y0, x1, y1];
+}
+
+/**
+ * Static geometry of one split VTD, independent of how its blocks are
+ * assigned: which block each VTD perimeter segment touches, and the block
+ * segments shared by two of its blocks.
+ */
+export function splitGeometry(topo, idx, vtdGeom, blockFeatures) {
+  const { px, py, segA, segB } = topo;
+  const blocks = blockFeatures.map((f) => ({ g: f.properties.GEOID20, geom: f.geometry, bb: bboxOfGeom(f.geometry) }));
+  const blockAt = (pt) => {
+    for (const b of blocks) {
+      if (pt[0] < b.bb[0] || pt[0] > b.bb[2] || pt[1] < b.bb[1] || pt[1] > b.bb[3]) continue;
+      if (inGeometry(pt, b.geom)) return b.g;
+    }
+    return null;
+  };
+
+  const perimBlock = new Map();      // VTD segment id -> GEOID20
+  let unresolved = 0;
+  for (const sg of topo.vtdSegs[idx]) {
+    const ax = px[segA[sg]], ay = py[segA[sg]], bx = px[segB[sg]], by = py[segB[sg]];
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    const c = Math.cos(my * Math.PI / 180);
+    // Unit normal in metres, then back to degrees.
+    let nx = -(by - ay) * M_PER_DEG_LAT, ny = (bx - ax) * 111320 * c;
+    const nl = Math.hypot(nx, ny) || 1;
+    nx /= nl; ny /= nl;
+    const at = (d) => [mx + (nx * d) / (111320 * c), my + (ny * d) / M_PER_DEG_LAT];
+    // Which side is inside: the simplified VTD outline decides.
+    const sign = inGeometry(at(0.5), vtdGeom) ? 1 : -1;
+    let g = null;
+    for (const d of [1, 3, 8, 20, 50, 120]) {
+      g = blockAt(at(sign * d));
+      if (g) break;
+    }
+    if (!g) {
+      // Nothing found inside: the nearest block centre will do.
+      unresolved++;
+      let best = Infinity;
+      for (const b of blocks) {
+        const dd = metres(mx, my, (b.bb[0] + b.bb[2]) / 2, (b.bb[1] + b.bb[3]) / 2);
+        if (dd < best) { best = dd; g = b.g; }
+      }
+    }
+    perimBlock.set(sg, g);
+  }
+
+  // Block segments shared by two of this VTD's blocks.
+  const owner = new Map();           // "ax,ay|bx,by" -> [g, ...]
+  const ends = new Map();
+  for (const b of blocks) {
+    for (const poly of polyRings(b.geom)) for (const ring of poly) {
+      for (let j = 1; j < ring.length; j++) {
+        const p = ring[j - 1], q = ring[j];
+        if (p[0] === q[0] && p[1] === q[1]) continue;
+        const kp = p[0] + ',' + p[1], kq = q[0] + ',' + q[1];
+        const key = kp < kq ? kp + '|' + kq : kq + '|' + kp;
+        let o = owner.get(key);
+        if (!o) { o = []; owner.set(key, o); ends.set(key, kp < kq ? [p, q] : [q, p]); }
+        o.push(b.g);
+      }
+    }
+  }
+  const inner = [];
+  for (const [key, o] of owner) {
+    if (o.length === 2 && o[0] !== o[1]) {
+      const [p, q] = ends.get(key);
+      inner.push([p[0], p[1], q[0], q[1], o[0], o[1]]);
+    }
+  }
+  return { idx, perimBlock, inner, unresolved };
+}
+
+/**
+ * Precinct boundaries at mixed resolution.
+ *
+ * @param asn     Int8Array: each VTD's precinct (ignored for split VTDs)
+ * @param splits  Map<idx, { geo: splitGeometry(...), ov: Map<GEOID20, 0..4> }>
+ * @returns { paths: [[x,y][]][] indexed by precinct 1..4, odd: number }
+ *          `odd` counts vertices left with an odd degree (gaps or spurs); 0 when clean.
+ */
+export function mixedBoundary(topo, asn, splits) {
+  const { px, py, segA, segB } = topo;
+  const nTopo = px.length;
+  const ext = [];                    // extra (block-layer) points: [x, y]
+  const extId = new Map();
+  const pid = (x, y) => {
+    const k = x + ',' + y;
+    let id = extId.get(k);
+    if (id === undefined) { id = nTopo + ext.length; ext.push([x, y]); extId.set(k, id); }
+    return id;
+  };
+  const xy = (id) => (id < nTopo ? [px[id], py[id]] : ext[id - nTopo]);
+  const out = [null, [], [], [], []];
+  let oddTotal = 0;
+  const stats = [];
+
+  for (let d = 1; d <= 4; d++) {
+    const parity = new Map();        // VTD segment id -> 1
+    const toggle = (sg) => { if (parity.has(sg)) parity.delete(sg); else parity.set(sg, 1); };
+    for (let i = 0; i < asn.length; i++) {
+      if (splits.has(i) || asn[i] !== d) continue;
+      const segs = topo.vtdSegs[i];
+      if (segs) for (let k = 0; k < segs.length; k++) toggle(segs[k]);
+    }
+    const extra = [];                // [idA, idB] pairs inside split VTDs
+
+    for (const [sidx, { geo, ov }] of splits) {
+      // Perimeter segments that take precinct d.
+      const local = [];
+      for (const [sg, g] of geo.perimBlock) {
+        if ((ov.get(g) ?? 0) === d) { toggle(sg); local.push(sg); }
+      }
+      // Block borders inside the VTD with d on exactly one side.
+      const inner = [];
+      for (const [ax, ay, bx, by, g1, g2] of geo.inner) {
+        const d1 = ov.get(g1) ?? 0, d2 = ov.get(g2) ?? 0;
+        if ((d1 === d) !== (d2 === d)) inner.push([pid(ax, ay), pid(bx, by)]);
+      }
+      if (!local.length && !inner.length) continue;
+
+      // Odd-degree ends of each set, then join them up.
+      const oddOf = (pairs) => {
+        const deg = new Map();
+        for (const [a, b] of pairs) { deg.set(a, (deg.get(a) || 0) + 1); deg.set(b, (deg.get(b) || 0) + 1); }
+        return [...deg].filter(([, n]) => n % 2).map(([p]) => p);
+      };
+      const V = oddOf(local.map((sg) => [segA[sg], segB[sg]]));
+      const P = oddOf(inner);
+      const dist = (a, b) => { const p = xy(a), q = xy(b); return metres(p[0], p[1], q[0], q[1]); };
+      const pairUp = (A, B, maxM) => {
+        const cand = [];
+        for (const a of A) for (const b of B) if (a !== b) cand.push([dist(a, b), a, b]);
+        cand.sort((x, y) => x[0] - y[0]);
+        const usedA = new Set(), usedB = new Set(), joins = [];
+        for (const [dd, a, b] of cand) {
+          if (dd > maxM) break;
+          if (usedA.has(a) || usedB.has(b) || usedA.has(b) || usedB.has(a)) continue;
+          usedA.add(a); usedB.add(b); joins.push([a, b]);
+        }
+        return { joins, restA: A.filter((a) => !usedA.has(a) && !usedB.has(a)), restB: B.filter((b) => !usedB.has(b) && !usedA.has(b)) };
+      };
+      // A block border meets the perimeter where the perimeter precinct changes.
+      const first = pairUp(P, V, 150);
+      extra.push(...inner, ...first.joins);
+      // Anything left over is paired up nearest first, whatever its kind (a
+      // block that touches the perimeter too briefly to own a VTD segment, for
+      // example). Each set has an even number of odd ends, so the leftovers
+      // together do too and every end is joined.
+      const before = extra.length - inner.length - first.joins.length;
+      const rest = first.restA.concat(first.restB);
+      extra.push(...pairUp(rest, rest, Infinity).joins);
+      const localPairs = local.map((sg) => [segA[sg], segB[sg]]).concat(extra.slice(before));
+      stats.push({ idx: sidx, d, P: P.length, V: V.length, matched: first.joins.length, localOdd: oddOf(localPairs).length });
+    }
+
+    const pairs = [...parity.keys()].map((sg) => [segA[sg], segB[sg]]).concat(extra);
+    // Count odd vertices: gaps or spurs would show here.
+    const deg = new Map();
+    for (const [a, b] of pairs) { deg.set(a, (deg.get(a) || 0) + 1); deg.set(b, (deg.get(b) || 0) + 1); }
+    for (const n of deg.values()) if (n % 2) oddTotal++;
+    out[d] = pairs.length ? stitchPairs(pairs, xy) : [];
+  }
+  return { paths: out, odd: oddTotal, stats };
 }

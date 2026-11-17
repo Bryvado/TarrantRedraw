@@ -99,8 +99,11 @@ Two properties of the data the app leans on:
 ## Using it
 
 **Drawing.** Pick a precinct in the left rail (or press `1`–`4`). Left-drag paints and
-**right-drag erases**, with the brush, the box and the fill alike. `Space`+drag pans and
-the wheel zooms. The lock next to each precinct stops it being painted over.
+**right-drag erases**, with the brush and the box (`Alt`+click erases with the fill).
+**Right-click** (press and release without moving more than 4 px) splits the VTD under the
+pointer into blocks, in any tool; on a VTD that is already split it opens the unit card.
+`Space`+drag pans and the wheel zooms. The lock next to each precinct stops it being painted
+over.
 
 | Key | Does |
 |---|---|
@@ -109,6 +112,7 @@ the wheel zooms. The lock next to each precinct stops it being painted over.
 | `I` | Pick the precinct under the cursor |
 | `B` / `M` / `F` / `S` / `H` | Brush / box select / fill region / select / pan |
 | Click | Open the unit card for that VTD or block |
+| Right-click | Split a VTD into blocks (on a split VTD: open its card) |
 | `Ctrl`+click | The same, without painting |
 | `A` | Show or hide the analytics under the map |
 | `Esc` | Close the unit card |
@@ -200,8 +204,10 @@ and delete. Loading replaces the plan you are drawing, so with unsaved changes i
 
 ## Block-level splitting
 
-Block editing is an option, not the default. **Split into blocks** on a VTD's unit card
-fetches `data/blocks/<vtdkey>.geojson` and lets you paint its blocks individually. **Undo
+Block editing is an option, not the default. **Right-click** a VTD, or use **Split into
+blocks** on its unit card, to fetch `data/blocks/<vtdkey>.geojson` and paint its blocks
+individually. An unassigned VTD's blocks start unassigned; an assigned VTD's blocks start in
+its precinct. **Undo
 split** is on the same card, whether you clicked the split VTD or any one of its blocks. It
 drops the block assignments and gives the whole VTD to the precinct holding most of its
 population, and the button names that precinct (*whole VTD goes to Pct 3*). Undo and redo
@@ -213,8 +219,36 @@ a VTD-level assignment plus block-level overrides.
   majority-population precinct. The panel marks them approximate whenever any VTD is split.
 - Painting a split VTD at VTD level discards the split.
 
-**Block-level partisan numbers are estimates.** Each VTD's votes are spread across its
-blocks by voting-age population. The UI says so everywhere they appear.
+**Finished splits melt into the precinct shapes.** Block lines show only for the split VTD
+that is selected or under the brush; otherwise blocks are filled at the same opacity as VTDs,
+without antialiasing seams, so no grid shows. Precinct outlines, and the dissolved GeoJSON
+export, follow the block assignment through a split VTD (`mixedBoundary` in
+`js/topology.js`):
+
+- Inside a split VTD the border runs along block segments that separate blocks in different
+  precincts.
+- On the split VTD's own perimeter the (simplified) VTD segments are kept. Each takes the
+  precinct of the block it touches, found by testing a point just inside the segment's
+  midpoint against the VTD's blocks.
+- Block geometry is unsimplified and the VTD layer is simplified, so the two never share
+  coordinates and segments are never cancelled across them. Where a block border reaches the
+  perimeter, its end is joined to the perimeter vertex where the segment precinct changes.
+  Every outline closes: no gaps, no spurs, which the tests check with random block
+  assignments as well as clean ones.
+- One visible trace of the two resolutions: at street zoom, a sliver a few metres wide can
+  show basemap along a split VTD's edge, where the simplified VTD outline and the true block
+  edge part.
+
+**Block shading follows the shading menu.** In every mode a split VTD shades block by block
+from each block's own values: Dem share is `ndv / (ndv + nrv)` from its file, and the 2026
+share `ndv26 / (ndv26 + nrv26)`. Blocks have no 2020–24 baseline, so the baseline view shows
+the VTD's value on each block, and the shift view shows the block's 2026 share minus its
+VTD's baseline.
+
+**Block-level partisan numbers are model estimates.** The block files carry modelled votes:
+a race-composition model fitted on VTDs, scaled so each VTD's blocks sum exactly to its real
+votes, so block shares differ within a VTD. The unit card labels every block partisan number
+*estimate*, with "model estimate from race composition" in its footnote.
 
 ---
 
@@ -383,8 +417,9 @@ multi-user editing. No changes to the R code.
 
 ## Tests
 
-`tests/plan-persistence.mjs` drives the app in headless Chromium through Playwright, with no
-web server: it saves, clears, loads and reloads a plan with a split VTD and a locked precinct;
+The browser tests drive the app in headless Chromium through Playwright, with no web server.
+
+`tests/plan-persistence.mjs` it saves, clears, loads and reloads a plan with a split VTD and a locked precinct;
 undoes and redoes splits and merges and checks the block geometry and colours; checks that
 Clear unlocks and that undo restores the locks; and exercises Save, `Ctrl+S` and the load
 warning.
@@ -395,9 +430,26 @@ count equals the assigned blocks) and the Find problems tool: a VTD deep inside 
 painted to Pct 1 shows as one fragment, Clean up proposes Pct 3 and restores Map 7 exactly,
 and Undo puts it back. It also covers islands, locks and a one-block fragment in a split VTD.
 
+`tests/splits.mjs` covers splitting:
+- **Right-click:** splits (unassigned blocks start unassigned, assigned ones in their
+  precinct); opens the card on a split VTD; a 3 px wobble still counts as a click; a
+  right-drag erases; the context menu is suppressed; left click and drag still paint.
+- **Display:** block lines appear only on the selected or brushed VTD, and blocks share the
+  VTD fill opacity.
+- **Outlines:** on the Pct 1/Pct 3 line the drawn border runs through the split VTD along
+  block edges, with every outline closed and no segment drawn twice. The same holds with
+  random assignments across neighbouring split VTDs, and in the GeoJSON export.
+- **Shading:** block votes, shares and shift values are correct, and in each shading mode
+  every block is coloured from its own value.
+
+All three share `tests/harness.mjs`. Run them together, or one at a time:
+
 ```bash
-node tests/plan-persistence.mjs
-node tests/fragments-export.mjs
+node tests/run.mjs
 ```
 
-Set `SHOTS=<dir>` on the second to save screenshots of the tool.
+```bash
+node tests/splits.mjs
+```
+
+Set `SHOTS=<dir>` on `fragments-export.mjs` to save screenshots of the Find problems tool.

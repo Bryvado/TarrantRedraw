@@ -354,3 +354,5 @@ body.resizing #map{pointer-events:none}
 .exp-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:4px 0}
 .exp-note{font-size:12px;color:#e6ab02}
 .linkbtn.inline{display:inline;padding:0;color:var(--fg);text-decoration:underline;font-size:12px}
+
+.rail-hint{font-size:11px;color:var(--fg3);margin-top:3px}
