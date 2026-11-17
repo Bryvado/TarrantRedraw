@@ -13,40 +13,12 @@
 //
 // Needs Playwright with Chromium (a local or global install).
 
-import { createRequire } from 'module';
-import { execSync } from 'child_process';
-import { fileURLToPath } from 'url';
-import fs from 'fs'; import path from 'path';
-const ROOT = path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+import fs from 'fs';
+import path from 'path';
+import { openApp } from './harness.mjs';
 
-function loadPlaywright() {
-  const req = createRequire(import.meta.url);
-  try { return req('playwright'); } catch (e) { /* fall back to a global install */ }
-  const g = execSync('npm root -g').toString().trim();
-  return createRequire(path.join(g, '/'))('playwright');
-}
-const { chromium } = loadPlaywright();
-const types = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.json':'application/json', '.geojson':'application/json', '.csv':'text/csv' };
-const b = await chromium.launch();
-const ctx = await b.newContext({ viewport: { width: 1366, height: 768 } });
-const page = await ctx.newPage();
-const errs = [];
-page.on('pageerror', (e) => errs.push('PAGEERR ' + e.message));
-page.on('console', (m) => { if (m.type() === 'error') errs.push('CONSOLE ' + m.text().slice(0, 200)); });
-page.on('dialog', (d) => d.accept());
-await page.route('http://app.local/**', (r) => {
-  const u = new URL(r.request().url());
-  const f = path.join(ROOT, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
-  if (!f.startsWith(ROOT) || !fs.existsSync(f)) return r.fulfill({ status: 404, body: 'nf' });
-  r.fulfill({ status: 200, contentType: types[path.extname(f)] || 'application/octet-stream', body: fs.readFileSync(f) });
-});
-const boot = async () => {
-  await page.waitForFunction(() => document.querySelector('#boot').classList.contains('done'), null, { timeout: 60000 });
-  await page.waitForTimeout(300);
-};
-let pass = 0, fail = 0;
-const check = (name, ok, extra = '') => { ok ? pass++ : fail++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
-const clickText = (t) => page.locator('button', { hasText: t }).first().click();
+const { page, boot, check, finish, clickText } = await openApp();
+
 const download = async (clickFn) => {
   const [dl] = await Promise.all([page.waitForEvent('download'), clickFn()]);
   return fs.readFileSync(await dl.path(), 'utf8');
@@ -76,9 +48,6 @@ const paintVtds = (keys, d) => page.evaluate(([keys, d]) => {
   T.mapView.onPick({ commit: true });
 }, [keys, d]).then(() => page.waitForTimeout(250));
 
-await page.goto('http://app.local/');
-await page.evaluate(() => localStorage.clear());
-await page.reload(); await boot();
 
 // ================================================================ export ====
 console.log('\n# DRA export: Map 7');
@@ -267,7 +236,4 @@ check('block goes back to Pct 3', await page.evaluate(([k, g]) => {
   const T = window.TarrantRedraw; return T.state.blockOv.get(T.data.idxOf.get(k)).get(g) === 3;
 }, [splitKey, target]));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-console.log(errs.join('\n') || 'no page errors');
-await b.close();
-process.exit(fail ? 1 : 0);
+await finish();

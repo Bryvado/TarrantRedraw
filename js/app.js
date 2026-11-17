@@ -68,6 +68,7 @@ async function boot() {
   mapView.onPick = handlePick;
   mapView.onHover = handleHover;
   mapView.onSelect = handleSelect;
+  mapView.onSplitClick = handleSplitClick;
 
   buildPrecinctList();
   wireToolbar();
@@ -359,6 +360,19 @@ function targetOf(feat) {
 // holds still while the pointer travels to its buttons.
 function handleHover(feat) { hoverTarget = targetOf(feat); }
 
+/**
+ * Right-click: split the VTD under the pointer into blocks. A VTD that is
+ * already split (or one of its blocks) opens its unit card instead.
+ */
+function handleSplitClick(feat) {
+  const t = targetOf(feat);
+  if (!t) return;
+  const idx = t.kind === 'vtd' ? t.idx : data.idxOf.get(t.key);
+  if (idx === undefined) return;
+  if (state.isSplit(idx)) { selectVtd(idx); return; }
+  doSplit(idx, { frame: false });
+}
+
 function handleSelect(feat) {
   selected = targetOf(feat);
   renderUnitInfo();
@@ -443,9 +457,13 @@ function renderUnitInfo() {
     add('In VTD', `${t.key} · ${ov.size} blocks`);
     add('Population / VAP', `${fmtInt(p.pop)} / ${fmtInt(p.vap)}`);
     add('Hisp / Black', `${fmtPct(p.f_hisp, 0)} / ${fmtPct(p.f_black, 0)}`);
-    add('D composite / 2026 *', `${p.dshare == null ? '—' : fmtPct(p.dshare)} / ${p.share26 == null ? '—' : fmtPct(p.share26)}`);
+    add('D composite (estimate) *', p.dshare == null ? '—' : fmtPct(p.dshare));
+    add('D 2026 (estimate) *', p.share26 == null ? '—' : fmtPct(p.share26));
+    add('2026 shift (estimate) *', p.shift26 == null ? '—' : fmtSigned(p.shift26));
     box.insertAdjacentHTML('beforeend', `<table>${rows.join('')}</table>`);
-    box.insertAdjacentHTML('beforeend', '<div class="uc-note">* estimated from the VTD’s votes</div>');
+    box.insertAdjacentHTML('beforeend', '<div class="uc-note">* model estimate from race composition, '
+      + 'scaled so the VTD’s blocks add up to its real votes. The shift is against the VTD’s 2020–24 baseline, '
+      + 'since blocks have none.</div>');
     box.append(undoSplitButton(idx));
     box.append(el('button', { class: 'linkbtn', text: 'Show the whole VTD', onclick: () => selectVtd(idx) }));
   }
@@ -806,7 +824,8 @@ function eyedropper() {
 function showKeysDialog() {
   const rows = [
     ['Left-drag', 'Paint with the active precinct'],
-    ['Right-drag, or Alt+drag', 'Erase (works with brush, box and fill)'],
+    ['Right-click', 'Split a VTD into blocks (on a split VTD: open its card)'],
+    ['Right-drag, or Alt+drag', 'Erase (works with brush and box; Alt+click with fill)'],
     ['Shift+drag', 'Box select, whatever tool is active'],
     ['Space+drag', 'Pan the map; the wheel zooms'],
     ['1 2 3 4', 'Pick a precinct'],
@@ -1097,7 +1116,7 @@ function applyCleanup() {
 }
 
 // ------------------------------------------------------- block splitting ----
-async function doSplit(idx) {
+async function doSplit(idx, { frame = true } = {}) {
   const key = data.keys[idx];
   if (state.isSplit(idx)) return;
   setStatus(`Loading blocks for VTD ${key}…`);
@@ -1109,9 +1128,14 @@ async function doSplit(idx) {
     mapView.setVtdState(idx, state.asn[idx]);
     mapView.refreshOutlines();
     recompute(false);
-    // Frame the VTD so its blocks are workable.
-    const b = bboxOf(data.vtdGeo.features.find((f) => f.properties.vtdkey === key));
-    if (b) mapView.map.fitBounds(b, { padding: 80, duration: 400, maxZoom: 15 });
+    // Frame the VTD so its blocks are workable: always from the card's button,
+    // and from a right-click only when the VTD is too small on screen to paint.
+    const b = bboxOf(data.vtdGeo.features[idx]);
+    if (b) {
+      const p0 = mapView.map.project(b[0]), p1 = mapView.map.project(b[1]);
+      const small = Math.min(Math.abs(p1.x - p0.x), Math.abs(p1.y - p0.y)) < 140;
+      if (frame || small) mapView.map.fitBounds(b, { padding: 80, duration: 400, maxZoom: 15 });
+    }
     setStatus(`VTD ${key} split into ${gj.features.length} blocks. Paint them one at a time; Undo split puts it back.`, 'ok');
     selectVtd(idx);
   } catch (e) {
@@ -1392,7 +1416,8 @@ function showExportDialog() {
     el('p', { class: 'tight', html: 'Precinct polygons with population, VAP shares, partisan shares, '
       + 'contiguity and Polsby-Popper as properties. EPSG:4326.' }),
     el('button', { text: 'Download GeoJSON', onclick: () => {
-      const txt = dissolvedGeoJSON(data, topo, state, lastMetrics, (i) => mapView.blockPopMap(i));
+      const txt = dissolvedGeoJSON(data, topo, state, lastMetrics, (i) => mapView.blockPopMap(i),
+        () => mapView.splitGeometries());
       download(`${slug(state.name)}_precincts.geojson`, txt, 'application/geo+json');
       setStatus('Exported dissolved precinct GeoJSON.', 'ok');
     } }),

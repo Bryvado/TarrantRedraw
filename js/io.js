@@ -10,7 +10,7 @@
 // ghost district; a block missing from the file is simply unassigned there.
 
 import { loadBlockVtd, loadBlocks } from './data.js';
-import { dissolvePolygon } from './topology.js';
+import { dissolvePolygon, mixedBoundary, pathsToPolygon } from './topology.js';
 import { parseCSV } from './util.js';
 
 export const DRA_HEADER = 'GEOID20,District';
@@ -85,14 +85,16 @@ export async function blockCSV(data, state) {
 }
 
 /** Dissolved precinct polygons, EPSG:4326. */
-export function dissolvedGeoJSON(data, topo, state, metrics, blockPopByIdx) {
+export function dissolvedGeoJSON(data, topo, state, metrics, blockPopByIdx, splitGeometries) {
   const { asn } = flattenToVtd(state, blockPopByIdx);
+  // With split VTDs, the polygons follow the block assignment (mixed dissolve).
+  const splits = splitGeometries ? splitGeometries() : new Map();
+  const mixed = splits.size ? mixedBoundary(topo, state.asn, splits).paths : null;
   const features = [];
   for (let d = 1; d <= 4; d++) {
     const idx = [];
     for (let i = 0; i < data.n; i++) if (asn[i] === d) idx.push(i);
-    if (!idx.length) continue;
-    const geom = dissolvePolygon(topo, idx);
+    const geom = mixed ? pathsToPolygon(mixed[d]) : (idx.length ? dissolvePolygon(topo, idx) : null);
     if (!geom) continue;
     const r = metrics.rows[d], g = metrics.geom[d];
     features.push({

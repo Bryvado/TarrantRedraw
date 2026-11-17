@@ -14,39 +14,12 @@
 //
 // Needs Playwright with Chromium (a local or global install).
 
-import { createRequire } from 'module';
-import { execSync } from 'child_process';
-import { fileURLToPath } from 'url';
-import fs from 'fs'; import path from 'path';
-const ROOT = path.resolve(process.argv[2] || path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+import fs from 'fs';
+import path from 'path';
+import { openApp } from './harness.mjs';
 
-function loadPlaywright() {
-  const req = createRequire(import.meta.url);
-  try { return req('playwright'); } catch (e) { /* fall back to a global install */ }
-  const g = execSync('npm root -g').toString().trim();
-  return createRequire(path.join(g, '/'))('playwright');
-}
-const { chromium } = loadPlaywright();
-const types = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.json':'application/json', '.geojson':'application/json', '.csv':'text/csv' };
-const b = await chromium.launch();
-const ctx = await b.newContext({ viewport: { width: 1366, height: 768 } });
-const page = await ctx.newPage();
-const errs = [];
-page.on('pageerror', (e) => errs.push('PAGEERR ' + e.message));
-page.on('console', (m) => { if (m.type() === 'error') errs.push('CONSOLE ' + m.text().slice(0, 200)); });
-page.on('dialog', (d) => d.accept());
-await page.route('http://app.local/**', (r) => {
-  const u = new URL(r.request().url());
-  const f = path.join(ROOT, u.pathname === '/' ? 'index.html' : decodeURIComponent(u.pathname));
-  if (!f.startsWith(ROOT) || !fs.existsSync(f)) return r.fulfill({ status: 404, body: 'nf' });
-  r.fulfill({ status: 200, contentType: types[path.extname(f)] || 'application/octet-stream', body: fs.readFileSync(f) });
-});
-const boot = async () => {
-  await page.waitForFunction(() => document.querySelector('#boot').classList.contains('done'), null, { timeout: 60000 });
-  await page.waitForTimeout(300);
-};
-let pass = 0, fail = 0;
-const check = (name, ok, extra = '') => { ok ? pass++ : fail++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
+const { page, boot, check, finish, clickText } = await openApp();
+
 const KEY = 8255;
 const S = () => page.evaluate((KEY) => {
   const T = window.TarrantRedraw, i = T.data.idxOf.get(KEY);
@@ -70,11 +43,7 @@ const blockStates = () => page.evaluate((KEY) => {
   for (const [g, d] of ov) { n++; const fs = T.mapView.map.getFeatureState({ source: 'blocks', id: g }); if (fs.d === d) match++; }
   return { n, match, inPct3: [...ov.values()].filter((d) => d === 3).length };
 }, KEY);
-const clickText = (t) => page.locator('button', { hasText: t }).first().click();
 
-await page.goto('http://app.local/');
-await page.evaluate(() => localStorage.clear());
-await page.reload(); await boot();
 
 // ---------------- Bug 1: saved plan keeps its splits through Load + reload
 console.log('\n# 1. Load a saved plan, then reload');
@@ -208,7 +177,4 @@ await page.click('#btn-plans');
 await page.locator('.m-row', { hasText: /^C/ }).locator('button', { hasText: 'Load' }).click(); await page.waitForTimeout(700);
 s = await S(); check('clean plan loads straight away', s.name === 'C' && !(await page.locator('#modal-back').isVisible()));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-console.log(errs.join('\n') || 'no page errors');
-await b.close();
-process.exit(fail ? 1 : 0);
+await finish();
