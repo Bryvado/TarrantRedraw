@@ -16,9 +16,7 @@ library(mapgl)
 library(patchwork)
 
 options(tigris_use_cache = TRUE)
-PACK_STARTS <- 5                                # short-burst runs, each from a different top sampled pack plan
-PACK_BURSTS <- 1500                             # bursts per run (was 400)
-PACK_SPLITW <- 0.002                            # charge per split city; 0 gives the pure partisan ceiling
+
 # ---- Output handling ----
 # The script runs as two stored blocks. Nothing is shown while a block runs: every table, printed line and
 # plot is collected and released together at the end. If a step fails, everything collected so far is
@@ -26,11 +24,13 @@ PACK_SPLITW <- 0.002                            # charge per split city; 0 gives
 OUT <- list()
 RUN_OK <- TRUE
 flush_out <- function() {
-  for (o in OUT) {
+  items <- OUT
+  OUT <<- list()                         # empty first, so a failed draw can never leave old output queued
+  for (o in items) {
     if (!is.null(o$txt)) cat(o$txt, sep = "\n")
-    if (!is.null(o$val)) print(o$val)
+    if (!is.null(o$val)) tryCatch(print(o$val), error = function(e)
+      message("\nCOULD NOT DRAW: ", utils::head(deparse(o$step), 1), "\n  ", conditionMessage(e), "\n"))
   }
-  OUT <<- list()
   invisible()
 }
 run_stored <- function(block, final = FALSE) {
@@ -40,7 +40,7 @@ run_stored <- function(block, final = FALSE) {
     tryCatch({
       txt <- capture.output(r <- withVisible(eval(ex, globalenv())))
       if (length(txt)) OUT[[length(OUT) + 1]] <<- list(txt = txt)
-      if (r$visible && !is.null(r$value)) OUT[[length(OUT) + 1]] <<- list(val = r$value)
+      if (r$visible && !is.null(r$value)) OUT[[length(OUT) + 1]] <<- list(val = r$value, step = ex)
     }, error = function(e) {
       RUN_OK <<- FALSE
       flush_out()
@@ -57,11 +57,17 @@ PART_A <- quote({
   DIR <- "~/TarrantRedistricting"                 # checkpoints + optional extras
   SRC <- file.path(DIR, "sourceshapes")           # hand-supplied input layers
   HALF_LIFE <- 4                                  # years; weight = 0.5^((2026 - year) / HALF_LIFE)
-  D_TGT     <- 0.58                               # R-pack: Democratic share the three unpacked precincts should clear
-  N_PER_RUN    <- 50000                           # plans per independent SMC run (one batch)
+  D_TGT     <- 0.55                               # R-pack: Democratic share the three unpacked precincts should clear
+  N_PER_RUN    <- 100000                          # plans per independent SMC run (one batch)
   N_RUNS       <- 20                              # batches; total sampled plans = N_PER_RUN * N_RUNS
   KEEP_PER_RUN <- 250                             # full plans kept from each batch for the gallery maps
   ENS_TAG      <- "v1"                            # change this whenever the map, tolerance or constraints change
+  PACK_STARTS  <- 5                               # short-burst runs, each from a different start
+  PACK_BURSTS  <- 1500                            # bursts per run
+  PACK_SPLITW  <- 0.002                           # charge per split city; 0 gives the pure partisan ceiling
+  SW_RBAND     <- c(0.38, 0.42)                   # swing plan: D share allowed in the Republican precinct (58-62% R)
+  SW_SWING     <- 0.495                           # swing plan: composite D share of the flippable precinct
+  SW_FLOOR     <- 0.62                            # swing plan: both packed D precincts at or above this
   
   # ---- 0. Preflight ----
   NEED <- c("Tarrant7_clean.geojson", "tarrant_precincts_2026.gpkg",
@@ -393,9 +399,40 @@ PART_A <- quote({
     saveRDS(cc_pack, f_sb)
   }
   stopifnot(length(cc_pack) == nrow(map), setequal(unique(cc_pack), 1:4))
+  
+  # ---- 4c. Swing plan: one capped R precinct, one flippable precinct, two packed D precincts (checkpointed) ----
+  f_sw <- file.path(DIR, "tarrant_cc_swing_plan.rds")
+  if (file.exists(f_sw)) {
+    cc_swing <- readRDS(f_sw)
+  } else {
+    sw_pen <- function(a) {                                           # 0 when every target is met
+      d <- sort(tapply(map$ndv, a, sum) / tapply(map$two_party, a, sum))
+      12 * (max(0, SW_RBAND[1] - d[1]) + max(0, d[1] - SW_RBAND[2])) + 10 * abs(d[2] - SW_SWING) + 6 * max(0, SW_FLOOR - d[3])
+    }
+    city_id  <- map$city_all
+    sw_score <- structure(function(plans) apply(as.matrix(plans), 2, \(a)
+                                                -sw_pen(a) - PACK_SPLITW * sum(tapply(a, city_id, n_distinct) > 1)),
+                          class = c("redist_scorer", "function"))
+    pm_pk  <- get_plans_matrix(plans_pack)
+    starts <- cbind(map$cc_map7, pm_pk[, order(apply(pm_pk, 2, sw_pen))[seq_len(PACK_STARTS - 1)]])
+    set.seed(439)
+    cand <- lapply(seq_len(ncol(starts)), function(j) {
+      sb   <- redist_shortburst(map, sw_score, init_plan = starts[, j], burst_size = 10, max_bursts = PACK_BURSTS,
+                                maximize = TRUE, verbose = FALSE)
+      sb_m <- get_plans_matrix(sb)
+      as.integer(sb_m[, ncol(sb_m)])
+    })
+    pen <- sapply(cand, sw_pen)
+    message("Swing plan penalty by start (0 = all targets met): ", paste(round(pen, 3), collapse = ", "))
+    cc_swing <- cand[[which.min(pen)]]
+    saveRDS(cc_swing, f_sw)
+  }
+  print(sort(round(tapply(map$ndv, cc_swing, sum) / tapply(map$two_party, cc_swing, sum), 3)))
+  stopifnot(length(cc_swing) == nrow(map), setequal(unique(cc_swing), 1:4))
 })
 run_stored(PART_A)
 # ==== END DATA BUILD ==== (tarrant_redraw_export.R runs the script down to this line)
+
 PART_B <- quote({
   
   # ---- 5. Neutral ensemble in independent batches ----
