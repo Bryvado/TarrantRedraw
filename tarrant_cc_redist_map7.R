@@ -61,8 +61,8 @@ PART_A <- quote({
   N_PER_RUN    <- 100000                          # plans per independent SMC run (one batch)
   N_RUNS       <- 20                              # batches; total sampled plans = N_PER_RUN * N_RUNS
   KEEP_PER_RUN <- 250                             # full plans kept from each batch for the gallery maps
-  USE_CITY_SPLITS <- FALSE                         # FALSE: city lines play no part in drawing any plan
-  USE_COI_SPLITS  <- FALSE                         # FALSE: communities of interest play no part in drawing any plan
+  USE_CITY_SPLITS <- FALSE                        # FALSE: city lines play no part in drawing any plan
+  USE_COI_SPLITS  <- FALSE                        # FALSE: communities of interest play no part in drawing any plan
   # Every checkpoint below is named for these two switches, so turning one off draws fresh plans
   # and switching back reuses the earlier ones. Both TRUE keeps the original file names.
   SPLIT_TAG    <- paste0(if (!USE_CITY_SPLITS) "_nocity", if (!USE_COI_SPLITS) "_nocoi")
@@ -391,19 +391,27 @@ PART_A <- quote({
     city_id <- map$city_all
     s_split <- structure(function(plans) apply(as.matrix(plans), 2, \(a) sum(tapply(a, city_id, n_distinct) > 1)),
                          class = c("redist_scorer", "function"))
-    score    <- scorer_group_pct(map, ndv, two_party, k = 3) - SPLIT_W * s_split
-    third_of <- function(a) sort(tapply(map$ndv, a, sum) / tapply(map$two_party, a, sum))[2]
-    starts   <- order(pack_tab$third, decreasing = TRUE)[seq_len(PACK_STARTS)]
+    score     <- scorer_group_pct(map, ndv, two_party, k = 3) - SPLIT_W * s_split
+    third_of  <- function(a) sort(tapply(map$ndv, a, sum) / tapply(map$two_party, a, sum))[2]
+    last_plan <- function(sb) { m <- get_plans_matrix(sb); as.integer(m[, ncol(m)]) }
+    starts    <- order(pack_tab$third, decreasing = TRUE)[seq_len(PACK_STARTS)]
     set.seed(439)
-    cand <- lapply(starts, function(j) {
-      sb   <- redist_shortburst(map, score, init_plan = pm_pk[, j], burst_size = 10, max_bursts = PACK_BURSTS,
-                                maximize = TRUE, verbose = FALSE)
-      sb_m <- get_plans_matrix(sb)
-      as.integer(sb_m[, ncol(sb_m)])
-    })
+    cand <- lapply(starts, function(j) last_plan(
+      redist_shortburst(map, score, init_plan = pm_pk[, j], burst_size = 10, max_bursts = PACK_BURSTS,
+                        maximize = TRUE, verbose = FALSE)))
     res <- sapply(cand, third_of)
     message("Third D precinct by start: ", paste(sprintf("%.1f%%", 100 * res), collapse = ", "))
     cc_pack <- cand[[which.max(res)]]
+    
+    # refine: faster non-reversible merge-split at lower compactness, then single-VTD flips along the borders
+    ref1 <- last_plan(redist_shortburst(map, score, init_plan = cc_pack, burst_size = 10, max_bursts = PACK_BURSTS,
+                                        reversible = FALSE, fixed_k = 1, compactness = 0.5, verbose = FALSE))
+    if (third_of(ref1) > third_of(cc_pack)) cc_pack <- ref1
+    ref2 <- last_plan(redist_shortburst(map, score, init_plan = cc_pack, backend = "flip", burst_size = 50,
+                                        max_bursts = 2 * PACK_BURSTS, verbose = FALSE))
+    ok2 <- max(abs(tapply(map$pop, ref2, sum) / (sum(map$pop) / 4) - 1)) <= 0.05
+    if (ok2 && third_of(ref2) > third_of(cc_pack)) cc_pack <- ref2
+    message(sprintf("After refinement: third D precinct %.1f%% (ceiling 60.7%%)", 100 * third_of(cc_pack)))
     saveRDS(cc_pack, f_sb)
   }
   stopifnot(length(cc_pack) == nrow(map), setequal(unique(cc_pack), 1:4))
