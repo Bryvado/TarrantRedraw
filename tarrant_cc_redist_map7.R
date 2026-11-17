@@ -55,8 +55,8 @@ PART_A <- quote({
   DIR <- "~/TarrantRedistricting"                 # checkpoints + optional extras
   SRC <- file.path(DIR, "sourceshapes")           # hand-supplied input layers
   HALF_LIFE <- 4                                  # years; weight = 0.5^((2026 - year) / HALF_LIFE)
-  D_TGT     <- 0.53                               # R-pack: Democratic share the three unpacked precincts should clear
-  N_PER_RUN    <- 100000                           # plans per independent SMC run (one batch)
+  D_TGT     <- 0.58                               # R-pack: Democratic share the three unpacked precincts should clear
+  N_PER_RUN    <- 50000                           # plans per independent SMC run (one batch)
   N_RUNS       <- 20                              # batches; total sampled plans = N_PER_RUN * N_RUNS
   KEEP_PER_RUN <- 250                             # full plans kept from each batch for the gallery maps
   ENS_TAG      <- "v1"                            # change this whenever the map, tolerance or constraints change
