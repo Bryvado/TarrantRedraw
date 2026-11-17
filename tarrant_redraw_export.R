@@ -27,7 +27,7 @@ NEED_OBJ <- c("tar_sf", "cc_pack", "map7_sf", "cities", "comms", "DIR")
 if (!all(sapply(NEED_OBJ, exists))) {
   stopifnot(file.exists(MAIN))
   src  <- readLines(MAIN)
-  stop_at <- grep("^stopifnot\\(length\\(cc_pack\\)", src)
+  stop_at <- grep("^# ==== END DATA BUILD", src)
   stopifnot(length(stop_at) == 1)
   eval(parse(text = src[1:stop_at]), envir = globalenv())
 }
@@ -103,18 +103,40 @@ chk <- blk |> st_drop_geometry() |> count(vtdkey, wt = pop, name = "blk_pop") |>
 cat("Blocks:", nrow(blk), "| VTDs whose block population differs from TLC:",
     sum(replace_na(chk$blk_pop, 0) != chk$pop), "of", nrow(chk), "\n")
 
-# 5b. Block geometry, one file per VTD, for the optional split-a-VTD mode.
-#     Votes are the VTD's votes spread by voting-age population: ESTIMATES, not counts.
-vv <- tar_sf |> st_drop_geometry() |> select(vtdkey, v_ndv = ndv, v_nrv = nrv, v_ndv26 = ndv26, v_nrv26 = nrv26)
-blk_out <- blk |>
-  select(-any_of(c("lat", "lon"))) |>
+# 5b. Block geometry, one file per VTD, for the split-a-VTD mode.
+#     Block votes are ESTIMATES: each block's share comes from a VTD-level model of party share on race
+#     composition, then the votes are scaled so every VTD's blocks sum exactly to the VTD's real totals.
+comp_x <- function(x) x |>
+  mutate(across(c(vap, vap_white, vap_black, vap_hisp), \(v) replace_na(as.numeric(v), 0)),
+         h  = if_else(vap > 0, vap_hisp / vap, 0),
+         bl = if_else(vap > 0, vap_black / vap, 0),
+         o  = if_else(vap > 0, pmax(0, 1 - (vap_white + vap_hisp + vap_black) / vap), 0))
+vfit <- tar_sf |> st_drop_geometry() |> filter(vap > 0, ndv + nrv > 0, ndv26 + nrv26 > 0) |> comp_x()
+m_c  <- glm(cbind(ndv,   nrv)   ~ h + bl + o, family = quasibinomial, data = vfit)
+m_26 <- glm(cbind(ndv26, nrv26) ~ h + bl + o, family = quasibinomial, data = vfit)
+print(round(rbind(composite = coef(m_c), y2026 = coef(m_26)), 2))
+
+blk2 <- blk |> select(-any_of(c("lat", "lon"))) |> comp_x()
+X    <- st_drop_geometry(blk2)
+blk2$p_c  <- predict(m_c,  newdata = X, type = "response")
+blk2$p_26 <- predict(m_26, newdata = X, type = "response")
+
+vv    <- tar_sf |> st_drop_geometry() |> select(vtdkey, v_ndv = ndv, v_nrv = nrv, v_ndv26 = ndv26, v_nrv26 = nrv26)
+alloc <- function(x, tot) if (sum(x) > 0) x * tot[1] / sum(x) else rep(tot[1] / length(x), length(x))
+blk_out <- blk2 |>
   left_join(vv, by = "vtdkey") |>
   group_by(vtdkey) |>
-  mutate(wt = if (sum(vap, na.rm = TRUE) > 0) vap / sum(vap, na.rm = TRUE) else 1 / n()) |>
+  mutate(w     = if (sum(vap) > 0) vap else rep(1, n()),
+         ndv   = alloc(p_c * w,  v_ndv),   nrv   = alloc((1 - p_c) * w,  v_nrv),
+         ndv26 = alloc(p_26 * w, v_ndv26), nrv26 = alloc((1 - p_26) * w, v_nrv26)) |>
   ungroup() |>
   transmute(GEOID20, vtdkey, pop, vap, vap_white, vap_black, vap_hisp,
-            ndv = round(wt * v_ndv, 2), nrv = round(wt * v_nrv, 2),
-            ndv26 = round(wt * v_ndv26, 2), nrv26 = round(wt * v_nrv26, 2))
+            across(c(ndv, nrv, ndv26, nrv26), \(x) round(x, 2)))
+
+# every VTD's blocks must add back to the VTD's real votes
+chk_v <- blk_out |> st_drop_geometry() |> group_by(vtdkey) |>
+  summarise(across(c(ndv, nrv, ndv26, nrv26), sum)) |> left_join(vv, by = "vtdkey")
+stopifnot(max(abs(chk_v$ndv - chk_v$v_ndv), abs(chk_v$ndv26 - chk_v$v_ndv26)) < 1)
 walk(split(blk_out, blk_out$vtdkey), \(d) wr(d, file.path("blocks", paste0(d$vtdkey[1], ".geojson"))))
 
 # ---- 6. What was written ----
